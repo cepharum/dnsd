@@ -1,0 +1,5 @@
+.vscode
+.idea
+.nyc_output
+_test_data
+test
