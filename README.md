@@ -2,6 +2,8 @@
 
 *dnsd* is a Node.js package for working with DNS. It converts binary DNS messages to and from convenient JavaScript objects; and it provides a server API, for running a custom name server.
 
+> This module is a fork of dnsd originally developed for Iris Couch.
+
 *dnsd* is available as an npm module.
 
     $ npm install dnsd
