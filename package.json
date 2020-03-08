@@ -1,19 +1,33 @@
-{ "name": "dnsd"
-, "description": "Dynamic authoritative name server for Iris services"
-
-, "keywords": [ "dns", "bind", "dnsd", "iris" ]
-, "version": "0.9.5"
-, "author": "Jason Smith <jhs@iriscouch.com> (http://www.iriscouch.com)"
-, "repository": { "type":"git", "url":"https://github.com/iriscouch/dnsd" }
-
-, "engines": { "node": ">= 0.8" }
-, "main": "./named.js"
-
-, "dependencies": { "optimist": "~0.3.4"
-                  , "defaultable": "~0.7.2"
-                  }
-
-, "devDependencies": { "tap": "~0.2.5"
-                     }
-, "scripts": { "test": "tap test/*.js" }
+{
+	"name": "@cepharum/dnsd",
+	"description": "dynamic authoritative name server",
+	"keywords": [
+		"dns",
+		"bind",
+		"dnsd",
+		"iris"
+	],
+	"version": "0.9.5",
+	"author": "Jason Smith <jhs@iriscouch.com> (http://www.iriscouch.com)",
+	"contributors": [
+		"Thomas Urban <thomas.urban@cepharum.de>"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/cepharum/dnsd"
+	},
+	"engines": {
+		"node": ">= 0.8"
+	},
+	"main": "./named.js",
+	"dependencies": {
+		"optimist": "~0.3.4",
+		"defaultable": "~0.7.2"
+	},
+	"devDependencies": {
+		"tap": "^14.10.6"
+	},
+	"scripts": {
+		"test": "tap test/*.js"
+	}
 }
