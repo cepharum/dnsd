@@ -30,7 +30,7 @@ test('Parse all known messages', function(t) {
 })
 
 test('Parse invalid messages', function(t) {
-  var data = new Buffer('My name is Jason and I am awesome.')
+  var data = Buffer.from('My name is Jason and I am awesome.')
   t.throws(function() { API.parse(data) }, 'Exception parsing random data')
   t.end()
 })

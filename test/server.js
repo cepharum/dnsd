@@ -114,7 +114,7 @@ test('Network queries', function(t) {
         type = 'udp'
         console.error('TCP to %d', PORT)
         var sock = net.connect({'port':PORT}, function(er) {
-          sock.write(new Buffer([data.length >> 8, data.length & 0xff]))
+          sock.write(Buffer.from([data.length >> 8, data.length & 0xff]))
           sock.write(data)
           sock.end()
         })
