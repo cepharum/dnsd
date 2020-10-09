@@ -351,11 +351,11 @@ class DNSResponse extends DNSMessage {
 
 		if ( Array.isArray( value ) ) {
 			this.answer = ( this.answer || [] ).concat( value );
-			value = undefined;                                              // eslint-disable-line no-param-reassign
+			value = undefined;                                                  // eslint-disable-line no-param-reassign
 		} else if ( value && typeof value == "object" ) {
 			// eslint-disable-next-line consistent-this
 			that = new this.constructor( value, this.connection );
-			value = undefined;                                              // eslint-disable-line no-param-reassign
+			value = undefined;                                                  // eslint-disable-line no-param-reassign
 		}
 
 
@@ -364,7 +364,7 @@ class DNSResponse extends DNSMessage {
 		const authorities = that.authority || [];
 		const additionals = that.additional || [];
 
-		that.recursion_available = false;                                   // eslint-disable-line camelcase
+		that.recursion_available = false;                                       // eslint-disable-line camelcase
 
 
 		// Find the zone of authority for this record, if any.
@@ -437,8 +437,8 @@ class DNSResponse extends DNSMessage {
 }
 
 
-module.exports = function createServer( requestHandler ) {                  // eslint-disable-line no-param-reassign
-	return new DNSServer( requestHandler );
+module.exports = function createServer( requestHandler, options = {} ) {    // eslint-disable-line no-param-reassign
+	return new DNSServer( requestHandler, options );
 };
 
 
