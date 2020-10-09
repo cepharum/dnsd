@@ -4,47 +4,48 @@
 //
 // Test DNS messages
 
-var fs = require('fs')
-var tap = require('tap')
-var test = tap.test
-var util = require('util')
+"use strict";
 
-var Message = require('../message')
-var API = require('../named')
-var DATA = __dirname + '/../_test_data'
+const File = require( "fs" );
 
-test('Message API', function(t) {
-  t.type(Message, 'function', 'Message is a function (constructor)')
-  t.throws(function() { new Message }, 'Message requires a data buffer')
+const { test } = require( "tap" );
 
-  t.type(API.parse, 'function', 'parse function in the API')
-  t.type(API.stringify, 'function', 'stringify function in the API')
+const { DNSMessage } = require( "../message" );
+const API = require( "../index" );
+const DATA = __dirname + "/../_test_data";
 
-  t.throws(function() { API.parse() }, 'Parse function needs a data buffer')
+test( "Message API", function( t ) {
+	t.type( DNSMessage, "function", "Message is a function (constructor)" );
+	t.throws( function() { new DNSMessage; }, "Message requires a data buffer" );
 
-  t.end()
-})
+	t.type( API.decode, "function", "decode function in the API" );
+	t.type( API.encode, "function", "encode function in the API" );
 
-test('Parse a valid query', function(t) {
-  var data = fs.readFileSync(DATA + '/www.company.example-query')
-    , msg = new Message(data)
+	t.throws( function() { API.decode(); }, "Parse function needs a data buffer" );
 
-  t.ok(msg, 'Parsed a message with the object API')
+	t.end();
+} );
 
-  msg = API.parse(data)
-  t.ok(msg, 'Parsed a message with the parse API')
+test( "Parse a valid query", function( t ) {
+	const data = File.readFileSync( DATA + "/www.company.example-query" );
+	let msg = new DNSMessage( data );
 
-  t.end()
-})
+	t.ok( msg, "Parsed a message with the object API" );
 
-test('Parse a valid response', function(t) {
-  var data = fs.readFileSync(DATA + '/www.company.example-response')
-    , msg = new Message(data)
+	msg = API.decode( data );
+	t.ok( msg, "Parsed a message with the decode API" );
 
-  t.ok(msg, 'Parsed a message with the object API')
+	t.end();
+} );
 
-  msg = API.parse(data)
-  t.ok(msg, 'Parsed a message with the parse API')
+test( "Parse a valid response", function( t ) {
+	const data = File.readFileSync( DATA + "/www.company.example-response" );
+	let msg = new DNSMessage( data );
 
-  t.end()
-})
+	t.ok( msg, "Parsed a message with the object API" );
+
+	msg = API.decode( data );
+	t.ok( msg, "Parsed a message with the decode API" );
+
+	t.end();
+} );

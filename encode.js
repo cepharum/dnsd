@@ -2,286 +2,358 @@
 //
 // Encode DNS messages
 
-var util = require('util')
+"use strict";
 
-var constants = require('./constants')
+const { typeToNumber, classToNumber } = require( "./constants" );
+const SECTIONS = [ "question", "answer", "authority", "additional" ];
 
-module.exports = { 'State': State
-                 }
 
-var SECTIONS = ['question', 'answer', 'authority', 'additional']
+/**
+ * Encodes DNS message into sequence of octets representing that message in wire
+ * format suitable for transmission.
+ */
+class Encoder {
+	/** */
+	constructor() {
+		this.header = Buffer.alloc( 12 );
+		this.position = 0;
 
-function State () {
-  var self = this
+		this.question = [];
+		this.answer = [];
+		this.authority = [];
+		this.additional = [];
 
-  self.header = Buffer.alloc(12)
-  self.position = 0
+		// tracks positions of previously encoded domain names for name compression
+		this.domains = {};
+	}
 
-  self.question   = []
-  self.answer     = []
-  self.authority  = []
-  self.additional = []
+	/**
+	 * Retrieves sequence of octets describing message prepared in encoder.
+	 *
+	 * @returns {Buffer} description of message in wire format
+	 */
+	toBinary() {
+		return Buffer.concat( [this.header].concat(
+			this.question, this.answer, this.authority, this.additional
+		) );
+	}
 
-  self.domains = {} // The compression lookup table
+	/**
+	 * Encodes provided message in context of current encoder.
+	 *
+	 * @note This method isn't intended to be invoked multiple times per encoder
+	 *       instance.
+	 *
+	 * @param {DNSMessage} msg message to be encoded
+	 * @returns {Encoder} current instance
+	 */
+	message( msg ) {
+		if ( !( msg instanceof require( "./message" ).DNSMessage ) ) {
+			throw new TypeError( "message must be instance of DNSMessage" );
+		}
+
+		// ID
+		this.header.writeUInt16BE( msg.id, 0 );
+
+		// QR, opcode, AA, TC, RD
+		let byte = 0;
+		byte |= msg.type === "response" ? 0x80 : 0x00;
+		byte |= msg.authoritative ? 0x04 : 0x00;
+		byte |= msg.truncated ? 0x02 : 0x00;
+		byte |= msg.recursion_desired ? 0x01 : 0x00;
+
+		const opcodeNames = [ "query", "iquery", "status", null, "notify", "update" ];
+		const opcode = opcodeNames.indexOf( msg.opcode );
+
+		if ( opcode === -1 || typeof msg.opcode !== "string" )
+			throw new Error( "Unknown opcode: " + msg.opcode );
+
+		byte |= opcode << 3;
+
+		this.header.writeUInt8( byte, 2 );
+
+		// RA, Z, AD, CD, RCODE
+		byte = 0;
+		byte |= msg.recursion_available ? 0x80 : 0x00;
+		byte |= msg.authenticated ? 0x20 : 0x00;
+		byte |= msg.checking_disabled ? 0x10 : 0x00;
+		byte |= msg.responseCode & 0x0f;
+
+		this.header.writeUInt8( byte, 3 );
+
+		this.position = 12; // the beginning of the sections
+
+		for ( const section of SECTIONS ) {
+			for ( const record of msg[section] || [] ) {
+				this.record( section, record );
+			}
+		}
+
+		// Write the section counts.
+		this.header.writeUInt16BE( this.question.length, 4 );
+		this.header.writeUInt16BE( this.answer.length, 6 );
+		this.header.writeUInt16BE( this.authority.length, 8 );
+		this.header.writeUInt16BE( this.additional.length, 10 );
+
+		return this;
+	}
+
+	/**
+	 * Encodes provided record in selected section of currently encoded message.
+	 *
+	 * @param {string} sectionName name of section this record belongs to
+	 * @param {DNSRecord} record instance of record to be encoded
+	 * @returns {void}
+	 */
+	record( sectionName, record ) {
+		const body = [];
+
+		// Write the record name.
+		let buf = this.encodeName( record.name );
+		body.push( buf );
+		this.position += buf.length;
+
+		const type = typeToNumber( record.type );
+		const classValue = classToNumber( record.class );
+
+		// Write the type.
+		buf = Buffer.alloc( 2 );
+		buf.writeUInt16BE( type, 0 );
+		body.push( buf );
+		this.position += 2;
+
+		// Write the class.
+		buf = Buffer.alloc( 2 );
+		buf.writeUInt16BE( classValue, 0 );
+		body.push( buf );
+		this.position += 2;
+
+		if ( sectionName !== "question" ) {
+			// Write the TTL.
+			buf = Buffer.alloc( 4 );
+			buf.writeUInt32BE( record.ttl || 0, 0 );
+			body.push( buf );
+			this.position += 4;
+
+			// Write the rdata. Update the position now (the rdata length value) in case self.encode() runs.
+			let match, rdata;
+
+			switch ( record.class + " " + record.type ) {
+				case "IN A" :
+					rdata = record.data || "0.0.0.0";
+					match = rdata.match( /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/ );
+					if ( !match )
+						throw new Error( "Bad " + record.type + " record data: " + JSON.stringify( record ) );
+
+					rdata = [ Number( match[1] ), Number( match[2] ), Number( match[3] ), Number( match[4] ) ];
+					break;
+
+				case "IN AAAA" :
+					rdata = ( record.data || "" ).split( /:/ );
+					if ( rdata.length !== 8 )
+						throw new Error( "Bad " + record.type + " record data: " + JSON.stringify( record ) );
+
+					rdata = rdata.map( pair => {
+						const qualified = ( "0000" + pair ).slice( -4 );
+
+						if ( !qualified.match( /^[0-9a-f]{4}$/i ) )
+							throw new Error( "invalid segment in IPv6 address" );
+
+						return Buffer.from( qualified, "hex" );
+					} );
+					break;
+
+				case "IN MX" :
+					rdata = [
+						buf16( record.data.weight ),
+						this.encodeName( record.data.name, 2 + 2 ), // Adjust for the rdata length + preference values.
+					];
+					break;
+
+				case "IN SOA" : {
+					// fix notation of mail
+					const parts = record.data.rname.split( "@" );
+					let mail;
+
+					if ( parts.length > 0 ) {
+						parts[0] = parts[0].replace( /\./g, "\\." );
+						mail = parts.join( "." );
+					} else {
+						mail = record.data.rname;
+					}
+
+					const mName = this.encodeName( record.data.mname, 2 );
+					const rName = this.encodeName( mail, 2 + mName.length );
+
+					rdata = [
+						mName,
+						rName,
+						buf32( record.data.serial ),
+						buf32( record.data.refresh ),
+						buf32( record.data.retry ),
+						buf32( record.data.expire ),
+						buf32( record.data.ttl ),
+					];
+					break;
+				}
+
+				case "IN NS" :
+				case "IN PTR" :
+				case "IN CNAME" :
+					rdata = this.encodeName( record.data, 2 ); // Adjust for the rdata length
+					break;
+
+				case "IN TXT" :
+					rdata = ( Array.isArray( record.data ) ? record.data : [record.data] )
+						.map( part => {
+							const chunk = Buffer.from( String( part ) );
+							return [ chunk.length, chunk ];
+						} );
+					break;
+
+				case "IN SRV" :
+					rdata = [
+						buf16( record.data.priority ),
+						buf16( record.data.weight ),
+						buf16( record.data.port ),
+						this.encodeName( record.data.target, 2 + 6, { compress: false } ), // Offset for rdata length + priority, weight, and port.
+					];
+					break;
+
+				case "IN DS" :
+					rdata = [
+						buf16( record.data.key_tag ),
+						Buffer.from( [record.data.algorithm] ),
+						Buffer.from( [record.data.digest_type] ),
+						Buffer.from( record.data.digest ),
+					];
+					break;
+
+				case "NONE A" :
+					// I think this is no data, from RFC 2136 S. 2.4.3.
+					rdata = [];
+					break;
+
+				default :
+					throw new Error( "Unsupported record type: " + JSON.stringify( record ) );
+			}
+
+			// Write the rdata length. (The position was already updated.)
+			rdata = toOctetList( rdata );
+			buf = Buffer.alloc( 2 );
+			buf.writeUInt16BE( rdata.length, 0 );
+			body.push( buf );
+			this.position += 2;
+
+			// Write the rdata.
+			this.position += rdata.length;
+			if ( rdata.length > 0 )
+				body.push( Buffer.from( rdata ) );
+		}
+
+		this[sectionName].push( Buffer.concat( body ) );
+	}
+
+	/**
+	 * Encodes fully qualified domain name to become part of fully encoded
+	 * message.
+	 *
+	 * @param {string} fqdn fully qualified domain name to encode
+	 * @param {int} shift extra number of octets to be written before this name's encoding
+	 * @param {boolean} compress controls whether name may be compressed (@see https://tools.ietf.org/html/rfc1035#section-4.1.4)
+	 * @returns {Buffer} buffer containing encoded domain name
+	 */
+	encodeName( fqdn, shift = 0, { compress = true } = {} ) {
+		let domain = fqdn.replace( /\.$/, "" );
+		let position = this.position + shift;
+
+		const chunks = [];
+
+		while ( domain.length > 0 ) {
+			const pointer = this.domains[domain];
+
+			if ( pointer && compress && pointer <= 0x3fff ) {
+				// suffix of current FQDN has been encoded before and can be re-used
+				chunks.push( Buffer.from( [ 0xc0 + ( pointer >> 8 ), pointer & 0xff ] ) );
+				return Buffer.concat( chunks );
+			}
+
+			// Encode the next part of the domain, saving its position in the lookup table for later.
+			this.domains[domain] = position;
+
+			const split = /^([^.\s]{1,63})(?:\.([^.\s].*))?$/.exec( domain );
+			if ( !split ) {
+				throw new TypeError( `domain name "${fqdn}" is malformed near "${domain}"` );
+			}
+
+			const segment = split[1];
+			domain = split[2] == null ? "" : split[2];
+
+			const chunk = Buffer.alloc( segment.length + 1 );
+			chunk.write( segment, 1, segment.length, "ascii" );
+			chunk.writeUInt8( segment.length, 0 );
+			chunks.push( chunk );
+
+			position += chunk.length;
+		}
+
+		// Encode the root domain and be done.
+		chunks.push( Buffer.from( [0] ) );
+		return Buffer.concat( chunks );
+	}
 }
 
-State.prototype.toBinary = function() {
-  var self = this
 
-  var bufs = [self.header]
-  self.question  .forEach(function(buf) { bufs.push(buf) })
-  self.answer    .forEach(function(buf) { bufs.push(buf) })
-  self.authority .forEach(function(buf) { bufs.push(buf) })
-  self.additional.forEach(function(buf) { bufs.push(buf) })
 
-  return Buffer.concat(bufs)
+/**
+ * Converts provided integer value into 4-octet buffer containing that value in
+ * big endian order.
+ *
+ * @param {int} value value to be written
+ * @returns {Buffer} buffer containing provided value as 32-bit unsigned integer
+ */
+function buf32( value ) {
+	const buf = Buffer.alloc( 4 );
+	buf.writeUInt32BE( value, 0 );
+	return buf;
 }
 
-State.prototype.message = function(msg) {
-  var self = this
-
-  // ID
-  self.header.writeUInt16BE(msg.id, 0)
-
-  // QR, opcode, AA, TC, RD
-  var byte = 0
-  byte |= msg.type == 'response' ? 0x80 : 0x00
-  byte |= msg.authoritative      ? 0x04 : 0x00
-  byte |= msg.truncated          ? 0x02 : 0x00
-  byte |= msg.recursion_desired  ? 0x01 : 0x00
-
-  var opcode_names = ['query', 'iquery', 'status', null, 'notify', 'update']
-    , opcode = opcode_names.indexOf(msg.opcode)
-
-  if(opcode == -1 || typeof msg.opcode != 'string')
-    throw new Error('Unknown opcode: ' + msg.opcode)
-  else
-    byte |= (opcode << 3)
-
-  self.header.writeUInt8(byte, 2)
-
-  // RA, Z, AD, CD, Rcode
-  byte = 0
-  byte |= msg.recursion_available ? 0x80 : 0x00
-  byte |= msg.authenticated       ? 0x20 : 0x00
-  byte |= msg.checking_disabled   ? 0x10 : 0x00
-  byte |= (msg.responseCode & 0x0f)
-
-  self.header.writeUInt8(byte, 3)
-
-  self.position = 12 // the beginning of the sections
-  SECTIONS.forEach(function(section) {
-    var records = msg[section] || []
-    records.forEach(function(rec) {
-      self.record(section, rec)
-    })
-  })
-
-  // Write the section counts.
-  self.header.writeUInt16BE(self.question.length    , 4)
-  self.header.writeUInt16BE(self.answer.length      , 6)
-  self.header.writeUInt16BE(self.authority.length   , 8)
-  self.header.writeUInt16BE(self.additional.length  , 10)
+/**
+ * Converts provided integer value into 2-octet buffer containing that value in
+ * big endian order.
+ *
+ * @param {int} value value to be written
+ * @returns {Buffer} buffer containing provided value as 16-bit unsigned integer
+ */
+function buf16( value ) {
+	const buf = Buffer.alloc( 2 );
+	buf.writeUInt16BE( value, 0 );
+	return buf;
 }
 
-State.prototype.record = function(section_name, record) {
-  var self = this
+/**
+ * Converts provided data into flat sequence of octet values.
+ *
+ * @param {Buffer|Buffer[]|number|number[]} data probably deeply nested set of buffers and octet values
+ * @returns {int[]} list of octets
+ */
+function toOctetList( data ) {
+	if ( Buffer.isBuffer( data ) ) {
+		return Array.prototype.slice.call( data );
+	}
 
-  var body = []
-    , buf
+	if ( Array.isArray( data ) ) {
+		return data.reduce( ( state, element ) => {
+			if ( Buffer.isBuffer( element ) || Array.isArray( element ) ) {
+				return state.concat( toOctetList( element ) );
+			}
 
-  // Write the record name.
-  buf = self.encode(record.name)
-  body.push(buf)
-  self.position += buf.length
+			state.push( element );
+			return state;
+		}, [] );
+	}
 
-  var type = constants.type_to_number(record.type)
-    , clas = constants.class_to_number(record.class)
-
-  // Write the type.
-  buf = Buffer.alloc(2)
-  buf.writeUInt16BE(type, 0)
-  body.push(buf)
-  self.position += 2
-
-  // Write the class.
-  buf = Buffer.alloc(2)
-  buf.writeUInt16BE(clas, 0)
-  body.push(buf)
-  self.position += 2
-
-  if(section_name != 'question') {
-    // Write the TTL.
-    buf = Buffer.alloc(4)
-    buf.writeUInt32BE(record.ttl || 0, 0)
-    body.push(buf)
-    self.position += 4
-
-    // Write the rdata. Update the position now (the rdata length value) in case self.encode() runs.
-    var match, rdata
-    switch (record.class + ' ' + record.type) {
-      case 'IN A':
-        rdata = record.data || ''
-        match = rdata.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
-        if(!match)
-          throw new Error('Bad '+record.type+' record data: ' + JSON.stringify(record))
-        rdata = [ +match[1], +match[2], +match[3], +match[4] ]
-        break
-      case 'IN AAAA':
-        rdata = (record.data || '').split(/:/)
-        if(rdata.length != 8)
-          throw new Error('Bad '+record.type+' record data: ' + JSON.stringify(record))
-        rdata = rdata.map(pair_to_buf)
-        break
-      case 'IN MX':
-        var host = record.data[1]
-        rdata = [ buf16(record.data[0])
-                , self.encode(host, 2 + 2) // Adjust for the rdata length + preference values.
-                ]
-        break
-      case 'IN SOA':
-        var mname   = self.encode(record.data.mname, 2) // Adust for rdata length
-          , rname   = self.encode(record.data.rname, 2 + mname.length)
-        rdata = [ mname
-                , rname
-                , buf32(record.data.serial)
-                , buf32(record.data.refresh)
-                , buf32(record.data.retry)
-                , buf32(record.data.expire)
-                , buf32(record.data.ttl)
-                ]
-        break
-      case 'IN NS':
-      case 'IN PTR':
-      case 'IN CNAME':
-        rdata = self.encode(record.data, 2) // Adjust for the rdata length
-        break
-      case 'IN TXT':
-        rdata = record.data.map(function(part) {
-          part = Buffer.from(part)
-          return [part.length, part]
-        })
-        break
-      case 'IN SRV':
-        rdata = [ buf16(record.data.priority)
-                , buf16(record.data.weight)
-                , buf16(record.data.port)
-                , self.encode(record.data.target, 2 + 6, 'nocompress') // Offset for rdata length + priority, weight, and port.
-                ]
-        break
-      case 'IN DS':
-        rdata = [ buf16(record.data.key_tag)
-                , Buffer.from([record.data.algorithm])
-                , Buffer.from([record.data.digest_type])
-                , Buffer.from(record.data.digest)
-                ]
-        break
-      case 'NONE A':
-        // I think this is no data, from RFC 2136 S. 2.4.3.
-        rdata = []
-        break
-      default:
-        throw new Error('Unsupported record type: ' + JSON.stringify(record))
-    }
-
-    // Write the rdata length. (The position was already updated.)
-    rdata = flat(rdata)
-    buf = Buffer.alloc(2)
-    buf.writeUInt16BE(rdata.length, 0)
-    body.push(buf)
-    self.position += 2
-
-    // Write the rdata.
-    self.position += rdata.length
-    if(rdata.length > 0)
-      body.push(Buffer.from(rdata))
-  }
-
-  self[section_name].push(Buffer.concat(body))
+	return [data];
 }
 
-State.prototype.encode = function(full_domain, position_offset, option) {
-  var self = this
-
-  var domain = full_domain
-  domain = domain.replace(/\.$/, '') // Strip the trailing dot.
-  position = self.position + (position_offset || 0)
-
-  var body = []
-    , bytes
-
-  var i = 0
-  var max_iterations = 40 // Enough for 1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa
-
-  while(++i < max_iterations) {
-    if(domain == '') {
-      // Encode the root domain and be done.
-      body.push(Buffer.from([0]))
-      return Buffer.concat(body)
-    }
-
-    else if(self.domains[domain] && option !== 'nocompress') {
-      // Encode a pointer and be done.
-      body.push(Buffer.from([0xc0, self.domains[domain]]))
-      return Buffer.concat(body)
-    }
-
-    else {
-      // Encode the next part of the domain, saving its position in the lookup table for later.
-      self.domains[domain] = position
-
-      var parts = domain.split(/\./)
-        , car = parts[0]
-      domain = parts.slice(1).join('.')
-
-      // Write the first part of the domain, with a length prefix.
-      //var part = parts[0]
-      var buf = Buffer.alloc(car.length + 1)
-      buf.write(car, 1, car.length, 'ascii')
-      buf.writeUInt8(car.length, 0)
-      body.push(buf)
-      position += buf.length
-      //bytes.unshift(bytes.length)
-    }
-  }
-
-  throw new Error('Too many iterations encoding domain: ' + full_domain)
-}
-
-
-//
-// Utilities
-//
-
-function buf32(value) {
-  var buf = Buffer.alloc(4)
-  buf.writeUInt32BE(value, 0)
-  return buf
-}
-
-function buf16(value) {
-  var buf = Buffer.alloc(2)
-  buf.writeUInt16BE(value, 0)
-  return buf
-}
-
-function flat(data) {
-  return Buffer.isBuffer(data)
-          ? Array.prototype.slice.call(data)
-          : Array.isArray(data)
-            ? data.reduce(flatten, [])
-            : [data]
-}
-
-function flatten(state, element) {
-  return (Buffer.isBuffer(element) || Array.isArray(element))
-          ? state.concat(flat(element))
-          : state.concat([element])
-}
-
-function pair_to_buf(pair) {
-  // Convert a string of two hex bytes, e.g. "89ab" to a buffer.
-  if(! pair.match(/^[0-9a-fA-F]{4}$/))
-    throw new Error('Bad '+record.type+' record data: ' + JSON.stringify(record))
-  return Buffer.from(pair, 'hex')
-}
+exports.Encoder = Encoder;

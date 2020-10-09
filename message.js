@@ -2,15 +2,15 @@
 //
 // Test displaying DNS records
 
-var util = require('util')
+"use strict";
 
-var parse = require('./parse')
-var encode = require('./encode')
-var constants = require('./constants')
+const Util = require( "util" );
 
-module.exports = DNSMessage
+const Parse = require( "./decode" );
+const { Encoder } = require( "./encode" );
+const { typeToLabel, classToLabel } = require( "./constants" );
 
-var SECTIONS = ['question', 'answer', 'authority', 'additional']
+const SECTIONS = [ "question", "answer", "authority", "additional" ];
 
 // A DNS message.  This is an easy-to-understand object representation of
 // standard DNS queries and responses.
@@ -37,285 +37,338 @@ var SECTIONS = ['question', 'answer', 'authority', 'additional']
 // * toString() - return a human-readable representation of this message
 // * toJSON() - Return a JSON-friendly represenation of this message
 // * toBinary() - Return a buffer of the encoded message
-function DNSMessage (body) {
-  var self = this
 
-  this.id = null
-  this.type                = null
-  this.responseCode        = null
-  this.opcode              = null
-  this.authoritative       = null
-  this.truncated           = null
-  this.recursion_desired   = null
-  this.recursion_available = null
-  this.authenticated       = null
-  this.checking_disabled   = null
+/**
+ * Implements representation of a single DNS message.
+ *
+ * @property {number} id a number representing the unique query ID
+ * @property {string} type "request" or "response"
+ * @property {number} response response code
+ * @property {string} opcode one out of "query", "iquery", "status", "unassigned", "notify", "update"
+ * @property {boolean} authoritative indicates if message is an authoritative answer
+ * @property {boolean} truncated indicates if message has been truncated due to oversize
+ * @property {boolean} recursion_desired indicates query is asking for recursive processing
+ * @property {boolean} recursion_available indicates whether service is supporting recursive processing of queries
+ * @property {boolean} authenticated marks response message to be authenticated by server
+ * @property {boolean} checking_disabled indicates in a request message that client is accepting non-authenticated data in response
+ */
+class DNSMessage {
+	/**
+	 * @param {Buffer|object} body sequence of octets describing DNS message in wire format or some object similar to DNSMessage to load properties from
+	 */
+	constructor( body ) {
+		this.id = null;
+		this.type = null;
+		this.responseCode = null;
+		this.opcode = null;
+		this.authoritative = null;
+		this.truncated = null;
+		// eslint-disable-next-line camelcase
+		this.recursion_desired = null;
+		// eslint-disable-next-line camelcase
+		this.recursion_available = null;
+		this.authenticated = null;
+		// eslint-disable-next-line camelcase
+		this.checking_disabled = null;
 
-  if(Buffer.isBuffer(body))
-    this.parse(body)
-  else if(typeof body != 'object')
-    throw new Error('Must provide a buffer or object argument with message contents')
-  else {
-    Object.keys(body).forEach(function(key) { self[key] = body[key] })
-    SECTIONS.forEach(function(section) {
-      if(self[section])
-        self[section].forEach(function(record, i) {
-          self[section][i] = new DNSRecord(record)
-        })
-    })
-  }
+		if ( Buffer.isBuffer( body ) ) {
+			this.parse( body );
+		} else if ( body && typeof body === "object" ) {
+			Object.assign( this, body );
 
-  // EDNS processing. For now, just remove those records.
-  SECTIONS.forEach(function(section) {
-    if(self[section]) {
-      self[section] = self[section].filter(function(record) { return ! record.edns })
-      if(self[section].length == 0)
-        delete self[section]
-    }
-  })
+			for ( const section of SECTIONS ) {
+				const records = this[section];
+
+				if ( Array.isArray( records ) )
+					records.forEach( ( record, i ) => {
+						records[i] = new DNSRecord( record );
+					} );
+			}
+		} else {
+			throw new Error( "DNSMessage must be created with raw buffer or object describing message content" );
+		}
+
+		// EDNS processing. For now, just remove those records.
+		for ( const section of SECTIONS ) {
+			if ( this[section] ) {
+				this[section] = this[section].filter( record => !record.edns );
+
+				if ( this[section].length === 0 )
+					delete this[section];
+			}
+		}
+	}
+
+	/**
+	 * Decodes whole DNS message from sequence of octets.
+	 *
+	 * @param {Buffer} body sequence of octets describing DNS message in wire format
+	 * @returns {void}
+	 */
+	parse( body ) {
+		this.id = Parse.id( body );
+		this.type = Parse.qr( body ) === 0 ? "request" : "response";
+
+		this.responseCode = Parse.rcode( body );
+
+		const opcodeNames = [ "query", "iquery", "status", null, "notify", "update" ];
+		const opcode = Parse.opcode( body );
+		this.opcode = opcodeNames[opcode] || null;
+
+		this.authoritative = Boolean( Parse.aa( body ) );
+		this.truncated = Boolean( Parse.tc( body ) );
+		// eslint-disable-next-line camelcase
+		this.recursion_desired = Boolean( Parse.rd( body ) );
+		// eslint-disable-next-line camelcase
+		this.recursion_available = Boolean( Parse.ra( body ) );
+		this.authenticated = Boolean( Parse.ad( body ) );
+		// eslint-disable-next-line camelcase
+		this.checking_disabled = Boolean( Parse.cd( body ) );
+
+		const sectionsCache = Parse.sections( body );
+
+		for ( const section of SECTIONS ) {
+			const count = Parse.recordCount( body, section );
+			if ( count ) {
+				this[section] = [];
+
+				for ( let i = 0; i < count; i++ )
+					this[section].push( new DNSRecord( body, section, i, sectionsCache ) );
+			}
+		}
+	}
+
+	/**
+	 * Serializes DNS message into sequence of octets describing it in wire format.
+	 *
+	 * @returns {Buffer} sequence of octets describing DNS message in wire format
+	 */
+	toBinary() {
+		return new Encoder().message( this ).toBinary();
+	}
+
+	/**
+	 * Renders string containing some essential information on DNS message.
+	 *
+	 * @returns {string} description of current DNS message
+	 */
+	toString() {
+		const info = [
+			Util.format( "ID                 : %d", this.id ),
+			Util.format( "Type               : %s", this.type ),
+			Util.format( "Opcode             : %s", this.opcode ),
+			Util.format( "Authoritative      : %s", this.authoritative ),
+			Util.format( "Truncated          : %s", this.truncated ),
+			Util.format( "Recursion Desired  : %s", this.recursion_desired ),
+			Util.format( "Recursion Available: %s", this.recursion_available ),
+			Util.format( "Response Code      : %d", this.responseCode ),
+		];
+
+		SECTIONS.forEach( section => {
+			if ( this[section] ) {
+				info.push( Util.format( ";; %s SECTION:", section.toUpperCase() ) );
+
+				this[section].forEach( record => {
+					info.push( record.toString() );
+				} );
+			}
+		} );
+
+		return info.join( "\n" );
+	}
 }
 
-DNSMessage.prototype.parse = function(body) {
-  var self = this
 
-  self.id = parse.id(body)
+/**
+ * Represents an individual record in a DNS message.
+ *
+ * @property {string} name domain name this record is applying to
+ * @property {string} type type of resource record ('A', 'NS', 'CNAME', etc. or 'Unknown')
+ * @property {string} class network class of resource record ('IN', 'None' 'Unknown')
+ * @property {number} ttl time to live, number of seconds for caching this record
+ * @property {?(object|string|Array)} data record data in type-specific format, null if not applicable
+ */
+class DNSRecord {
+	/**
+	 * @param {Buffer|object} body sequence of octets describing DNS record in wire format or data of DNS record extracted before
+	 * @param {string} sectionName name of DNS message section this record is associated with
+	 * @param {number} recordNum record's index into seleted section's set of records
+	 * @param {ParsedSectionsData} sectionsCache previously parsed information on records per section
+	 */
+	constructor( body, sectionName, recordNum, sectionsCache ) {
+		this.name = null;
+		this.type = null;
+		this.class = null;
 
-  var qr = parse.qr(body)
-  self.type = (qr == 0) ? 'request' : 'response'
+		if ( Buffer.isBuffer( body ) )
+			this.parse( body, sectionName, recordNum, sectionsCache || body );
+		else if ( typeof body === "object" )
+			Object.keys( body ).forEach( key => { this[key] = body[key]; } );
+		else
+			throw new Error( "Must provide a buffer or object argument with message contents" );
+	}
 
-  self.responseCode = parse.rcode(body)
+	/**
+	 * Extracts information on single DNS record from provided buffer.
+	 *
+	 * @param {Buffer} body sequence of octets describing DNS record in wire format
+	 * @param {string} sectionName name of message section this record belongs to
+	 * @param {number} recordNum index of record to decode
+	 * @param {Buffer|ParsedSectionsData} sections sequence of octets describing full DNS message or previously extracted sections data
+	 * @returns {void}
+	 */
+	parse( body, sectionName, recordNum, sections ) {
+		this.name = Parse.recordName( sections, sectionName, recordNum );
 
-  var opcode_names = ['query', 'iquery', 'status', null, 'notify', 'update']
-  var opcode = parse.opcode(body)
-  self.opcode = opcode_names[opcode] || null
+		const type = Parse.recordType( sections, sectionName, recordNum );
 
-  self.authoritative       = !! parse.aa(body)
-  self.truncated           = !! parse.tc(body)
-  self.recursion_desired   = !! parse.rd(body)
-  self.recursion_available = !! parse.ra(body)
-  self.authenticated       = !! parse.ad(body)
-  self.checking_disabled   = !! parse.cd(body)
+		this.type = typeToLabel( type );
+		if ( ! this.type )
+			throw new Error( "Record " + recordNum + ' in section "' + sectionName + '" has unknown type: ' + type );
 
-  var sections_cache = parse.sections(body)
+		if ( sectionName === "additional" && this.type === "OPT" && this.name === "" ) {
+			// EDNS record
+			this.edns = true;
+			delete this.name;
+			delete this.class;
+		} else {
+			// Normal record
+			this.class = classToLabel( Parse.recordClass( sections, sectionName, recordNum ) );
+			if ( !this.class )
+				throw new Error( "Record " + recordNum + ' in section "' + sectionName + '" has unknown class: ' + type );
 
-  SECTIONS.forEach(function(section) {
-    var count = parse.record_count(body, section)
-    if(count) {
-      self[section] = []
-      for(var i = 0; i < count; i++)
-        self[section].push(new DNSRecord(body, section, i, sections_cache))
-    }
-  })
+			if ( sectionName === "question" )
+				return;
+
+			this.ttl = Parse.recordTtl( sections, sectionName, recordNum );
+		}
+
+		const rdata = Parse.recordData( sections, sectionName, recordNum );
+
+		switch ( this.kind() ) {
+			case "IN A" :
+				if ( rdata.length !== 4 )
+					throw new Error( "Bad IN A data: " + JSON.stringify( this ) );
+				this.data = renderIPv4( rdata );
+				break;
+
+			case "IN AAAA" :
+				if ( rdata.length !== 16 )
+					throw new Error( "Bad IN AAAA data: " + JSON.stringify( this ) );
+				this.data = renderIPv6( rdata );
+				break;
+
+			case "IN NS" :
+			case "IN CNAME" :
+			case "IN PTR" :
+				this.data = Parse.uncompress( body, rdata );
+				break;
+
+			case "IN TXT" :
+				this.data = Parse.txt( body, rdata );
+				if ( this.data.length === 0 )
+					this.data = "";
+				else if ( this.data.length === 1 )
+					this.data = this.data[0];
+				break;
+
+			case "IN MX" :
+				this.data = Parse.mx( body, rdata );
+				break;
+
+			case "IN SRV" :
+				this.data = Parse.srv( body, rdata );
+				break;
+
+			case "IN SOA" :
+				this.data = Parse.soa( body, rdata );
+				this.data.rname = this.data.rname.replace( /\./, "@" );
+				break;
+
+			case "IN DS" :
+				this.data = {
+					key_tag: ( rdata[0] << 8 ) + rdata[1],                      // eslint-disable-line camelcase
+					algorithm: rdata[2],
+					digest_type: rdata[3],                                      // eslint-disable-line camelcase
+					digest: rdata.slice( 4 ).toJSON(), // Convert to a list of numbers.
+				};
+				break;
+
+			case "NONE A" :
+				this.data = [];
+				break;
+
+			case "IN OPT" :
+				this.data = rdata;
+				break;
+
+			default :
+				throw new Error( "Unknown record " + this.kind() + ": " + JSON.stringify( this ) );
+		}
+	}
+
+	/**
+	 * Renders identifier on current kind of resource record.
+	 *
+	 * @returns {string} string combining class and type of resource record
+	 */
+	kind() {
+		return this.edns ? "IN OPT" : this.class + " " + this.type;
+	}
+
+	/**
+	 * Renders current record as string e.g. for dumping/logging.
+	 *
+	 * @returns {string} rendered string describing current record
+	 */
+	toString() {
+		const { data } = this;
+
+		return [
+			leftPad( 23, this.name ),
+			leftPad( 7, this.ttl || "" ),
+			leftPad( 7, this.class ),
+			leftPad( 7, this.type ),
+			this.type === "MX" && data ? leftPad( 3, data[0] ) + " " + data[1] : Buffer.isBuffer( data ) ? data.toString( "hex" ) : data || "",
+		].join( " " );
+	}
 }
 
-DNSMessage.prototype.toBinary = function() {
-  // The encoder is picky, so make sure it gets a valid message.
-  var msg = JSON.parse(JSON.stringify(this))
 
-  SECTIONS.forEach(function(section) {
-    if(section == 'question')
-      return
+/**
+ * Prepends provided string with additional whitespace to ensure given minimum
+ * length.
+ *
+ * @param {number} minimumLength minimum length of resulting string
+ * @param {*} string value to be represented as string
+ * @returns {string} provided value represented as string extended to desired minimum length with SPC
+ */
+function leftPad( minimumLength, string ) {
+	const asString = String( string );
+	const missing = minimumLength - asString.length;
 
-    msg[section] = msg[section] || []
-    msg[section].forEach(function(record) {
-      if(record.class != 'IN')
-        return
-
-      // Make sure records promising data have data.
-      if(record.class == 'IN' && record.type == 'A')
-        record.data = record.data || '0.0.0.0'
-
-      // Convert SOA email addresses back to the dotted notation.
-      if(record.class == 'IN' && record.type == 'SOA')
-        record.data.rname = record.data.rname.replace(/@/g, '.')
-
-      // Normalize TXT records.
-      if(record.type == 'TXT' && typeof record.data == 'string')
-        record.data = [record.data]
-    })
-  })
-
-  var state = new encode.State
-  state.message(msg)
-  return state.toBinary()
+	return missing > 0 ? new Array( missing ).fill( " " ).join( "" ) + asString : asString;
 }
 
-DNSMessage.prototype.toString = function() {
-  var self = this
-
-  var info = [ util.format('ID                 : %d', self.id)
-             , util.format("Type               : %s", self.type)
-             , util.format("Opcode             : %s", self.opcode)
-             , util.format("Authoritative      : %s", self.authoritative)
-             , util.format("Truncated          : %s", self.truncated)
-             , util.format("Recursion Desired  : %s", self.recursion_desired)
-             , util.format("Recursion Available: %s", self.recursion_available)
-             , util.format("Response Code      : %d", self.responseCode)
-             ]
-
-  SECTIONS.forEach(function(section) {
-    if(self[section]) {
-      info.push(util.format(';; %s SECTION:', section.toUpperCase()))
-      self[section].forEach(function(record) {
-        info.push(record.toString())
-      })
-    }
-  })
-
-  return info.join('\n')
+/**
+ * Renders binary encoded IPv4 address in CIDR notation.
+ *
+ * @param {Buffer} octets binary encoded IPv4 address as sequence of four octets
+ * @returns {string} encoded IPv4 address in CIDR notation
+ */
+function renderIPv4( octets ) {
+	return Array.prototype.slice.call( octets, 0, 4 ).join( "." );
 }
 
-
-// An individual record from a DNS message
-//
-// Attributes:
-// * name  - Host name
-// * type  - Query type ('A', 'NS', 'CNAME', etc. or 'Unknown')
-// * class - Network class ('IN', 'None' 'Unknown')
-// * ttl   - Time to live for the data in the record
-// * data  - The record data value, or null if not applicable
-function DNSRecord (body, section_name, record_num, sections_cache) {
-  var self = this
-
-  this.name = null
-  this.type = null
-  this.class = null
-
-  // Leave these undefined for more consice and clear JSON serialization.
-  //this.ttl  = null
-  //this.data = null
-
-  if(Buffer.isBuffer(body))
-    this.parse(body, section_name, record_num, sections_cache || body)
-  else if(typeof body != 'object')
-    throw new Error('Must provide a buffer or object argument with message contents')
-  else
-    Object.keys(body).forEach(function(key) { self[key] = body[key] })
+/**
+ * Renders binary encoded IPv6 address in related CIDR notation.
+ *
+ * @param {Buffer} buf binary encoded IPv6 address as sequence of four octets
+ * @returns {string} encoded IPv6 address in CIDR notation
+ */
+function renderIPv6( buf ) {
+	return buf.toString( "hex" ).replace( /(....)/g, "$1:" ).replace( /:$/, "" );
 }
 
-DNSRecord.prototype.parse = function(body, section_name, record_num, sections) {
-  var self = this
-
-  self.name = parse.record_name(sections, section_name, record_num)
-
-  var type = parse.record_type(sections, section_name, record_num)
-  self.type = constants.type_to_label(type)
-  if(! self.type)
-    throw new Error('Record '+record_num+' in section "'+section_name+'" has unknown type: ' + type)
-
-  if(section_name != 'additional' || self.type != 'OPT' || self.name != '') {
-    // Normal record
-    var clas = parse.record_class(sections, section_name, record_num)
-    self.class = constants.class_to_label(clas)
-    if(! self.class)
-      throw new Error('Record '+record_num+' in section "'+section_name+'" has unknown class: ' + type)
-
-    if(section_name == 'question')
-      return
-    else
-      self.ttl  = parse.record_ttl(sections, section_name, record_num)
-  } else {
-    // EDNS record
-    self.edns = true
-    delete self.name
-    delete self.class
-    //self.edns = parse.record_edns(sections, section_name, record_num)
-  }
-
-  var rdata = parse.record_data(sections, section_name, record_num)
-  switch (self.kind()) {
-    case 'IN A':
-      if(rdata.length != 4)
-        throw new Error('Bad IN A data: ' + JSON.stringify(self))
-      self.data = inet_ntoa(rdata)
-      break
-    case 'IN AAAA':
-      if(rdata.length != 16)
-        throw new Error('Bad IN AAAA data: ' + JSON.stringify(self))
-      self.data = inet_ntoa6(rdata)
-      break
-    case 'IN NS':
-    case 'IN CNAME':
-    case 'IN PTR':
-      self.data = parse.uncompress(body, rdata)
-      break
-    case 'IN TXT':
-      self.data = parse.txt(body, rdata)
-      if(self.data.length === 0)
-        self.data = ''
-      else if(self.data.length === 1)
-        self.data = self.data[0]
-      break
-    case 'IN MX':
-      self.data = parse.mx(body, rdata)
-      break
-    case 'IN SRV':
-      self.data = parse.srv(body, rdata)
-      break
-    case 'IN SOA':
-      self.data = parse.soa(body, rdata)
-      self.data.rname = self.data.rname.replace(/\./, '@')
-      break
-    case 'IN DS':
-      self.data = { 'key_tag'    : rdata[0] << 8 | rdata[1]
-                  , 'algorithm'  : rdata[2]
-                  , 'digest_type': rdata[3]
-                  , 'digest'     : rdata.slice(4).toJSON() // Convert to a list of numbers.
-                  }
-      break
-    case 'NONE A':
-      self.data = []
-      break
-    case 'EDNS':
-      self.data = rdata
-      break
-    default:
-      throw new Error('Unknown record '+self.kind()+': ' + JSON.stringify(self))
-  }
-}
-
-DNSRecord.prototype.kind = function() {
-  return this.edns
-          ? 'EDNS'
-          : this.class + ' ' + this.type
-}
-
-DNSRecord.prototype.toString = function() {
-  var self = this
-  return [ width(23, self.name)
-         , width( 7, self.ttl || '')
-         , width( 7, self.class)
-         , width( 7, self.type)
-         , self.type == 'MX' && self.data
-            ? (width(3, self.data[0]) + ' ' + self.data[1])
-           : Buffer.isBuffer(self.data)
-            ? self.data.toString('hex')
-            : self.data || ''
-         ].join(' ')
-}
-
-//
-// Utilities
-//
-
-function width(str_len, str) {
-  str = '' + str
-  do {
-    var needed = str_len - str.length
-    if(needed > 0)
-      str = ' ' + str
-  } while(needed > 0)
-
-  return str
-}
-
-function inet_ntoa(buf) {
-  return buf[0] + '.' + buf[1] + '.' + buf[2] + '.' + buf[3]
-}
-
-function inet_ntoa6(buf) {
-  var result = []
-  for(var i = 0; i < 16; i += 2)
-    result.push(buf.slice(i, i+2).toString('hex'))
-  return result.join(':')
-}
+exports.DNSMessage = DNSMessage;
+exports.DNSRecord = DNSRecord;

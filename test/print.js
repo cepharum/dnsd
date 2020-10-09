@@ -4,35 +4,36 @@
 //
 // Test displaying DNS records
 
-var fs = require('fs')
-var tap = require('tap')
-var test = tap.test
-var util = require('util')
+"use strict";
 
-var Message = require('../message')
+const File = require( "fs" );
+const { test } = require( "tap" );
+const util = require( "util" );
 
-test('Display a message', function(t) {
-  var file = 'oreilly.com-response'
-  fs.readFile(__dirname+'/../_test_data/'+file, function(er, data) {
-    if(er)
-      throw er
+const { DNSMessage } = require( "../message" );
 
-    var msg = new Message(data)
-      , str = util.format('%s', msg)
-      , json = JSON.stringify(msg)
+test( "Display a message", function( t ) {
+	const file = "oreilly.com-response";
+	File.readFile( __dirname + "/../_test_data/" + file, function( er, data ) {
+		if ( er )
+			throw er;
 
-    t.type(str, 'string', 'Message can stringify')
+		const msg = new DNSMessage( data ),
+			str = util.format( "%s", msg );
 
-    var obj = JSON.parse(util.format('%j', msg))
-    t.equal(obj.id, 45753, 'JSON round-trip: id')
-    t.equal(obj.type, 'response', 'JSON round-trip: type')
-    t.equal(obj.opcode, 'query', 'JSON round-trip: opcode')
-    t.equal(obj.authoritative, true, 'JSON round-trip: authoritative')
-    t.equal(obj.truncated, false, 'JSON round-trip: truncated')
-    t.equal(obj.recursion_desired, true, 'JSON round-trip: recursion_desired')
-    t.equal(obj.recursion_available, true, 'JSON round-trip: recursion_available')
-    t.equal(obj.responseCode, 0, 'JSON round-trip: responseCode')
+		t.type( str, "string", "Message can encode" );
 
-    t.end()
-  })
-})
+		const obj = JSON.parse( util.format( "%j", msg ) );
+
+		t.equal( obj.id, 45753, "JSON round-trip: id" );
+		t.equal( obj.type, "response", "JSON round-trip: type" );
+		t.equal( obj.opcode, "query", "JSON round-trip: opcode" );
+		t.equal( obj.authoritative, true, "JSON round-trip: authoritative" );
+		t.equal( obj.truncated, false, "JSON round-trip: truncated" );
+		t.equal( obj.recursion_desired, true, "JSON round-trip: recursion_desired" );
+		t.equal( obj.recursion_available, true, "JSON round-trip: recursion_available" );
+		t.equal( obj.responseCode, 0, "JSON round-trip: responseCode" );
+
+		t.end();
+	} );
+} );

@@ -164,63 +164,76 @@ See http://support.google.com/a/bin/answer.py?hl=en&answer=140034 for more info 
 ## Example: Parse a message
 
 ```javascript
-var fs = require('fs')
-var dnsd = require('dnsd')
+const fs = require("fs")
+const dnsd = require("dnsd")
 
-var msg_file = require.resolve('dnsd/_test_data/registry.npmjs.org-response')
-  , msg_data = fs.readFileSync(msg_file)
-  , message = dnsd.parse(msg_data)
+const msg_file = require.resolve("dnsd/_test_data/registry.npmjs.org-response");
+const msg_data = fs.readFileSync(msg_file);
+const message = dnsd.decode(msg_data)
 
-console.dir(message)
+console.dir(message);
 ```
 
 Output
 
 ```javascript
-{ id: 34233,
-  type: 'response',
-  responseCode: 0,
-  opcode: 'query',
-  authoritative: false,
-  truncated: false,
-  recursion_desired: true,
-  recursion_available: true,
-  authenticated: false,
-  checking_disabled: false,
-  question: [ { name: 'registry.npmjs.org', type: 'A', class: 'IN' } ],
-  answer:
-   [ { name: 'registry.npmjs.org',
-       type: 'CNAME',
-       class: 'IN',
-       ttl: 85,
-       data: 'isaacs.iriscouch.net' },
-     { name: 'isaacs.iriscouch.net',
-       type: 'CNAME',
-       class: 'IN',
-       ttl: 2821,
-       data: 'ec2-23-23-147-24.compute-1.amazonaws.com' },
-     { name: 'ec2-23-23-147-24.compute-1.amazonaws.com',
-       type: 'A',
-       class: 'IN',
-       ttl: 356336,
-       data: '23.23.147.24' } ] }
+{ 
+    id: 34233,
+    type: "response",
+    responseCode: 0,
+    opcode: "query",
+    authoritative: false,
+    truncated: false,
+    recursion_desired: true,
+    recursion_available: true,
+    authenticated: false,
+    checking_disabled: false,
+    question: [ { name: "registry.npmjs.org", type: "A", class: "IN" } ],
+    answer: [ 
+        { 
+            name: "registry.npmjs.org",
+            type: "CNAME",
+            class: "IN",
+            ttl: 85,
+            data: "isaacs.iriscouch.net",
+        }, { 
+            name: "isaacs.iriscouch.net",
+            type: "CNAME",
+            class: "IN",
+            ttl: 2821,
+            data: "ec2-23-23-147-24.compute-1.amazonaws.com",
+         }, { 
+            name: "ec2-23-23-147-24.compute-1.amazonaws.com",
+            type: "A",
+            class: "IN",
+            ttl: 356336,
+            data: "23.23.147.24",
+         }, 
+    ],
+}
 ```
 
 ## Example: Encode a message
 
 ```javascript
-var dnsd = require('dnsd')
+const dnsd = require("dnsd")
 
-var questions = [ {name:'example.com', class:'IN', type:'TXT'} ]
-  , message = {type:'query', id:123, opcode:'query', recursion_desired:true, question:questions}
-  , msg_data = dnsd.binify(message)
+const questions = [ { name: "example.com", class: "IN", type: "TXT" } ];
+const message = { 
+    type: "query", 
+    id: 123, 
+    opcode: "query", 
+    recursion_desired: true, 
+    question: questions
+};
+const msg_data = dnsd.encode( message );
 
-console.log('Encoded = %j', Array.prototype.slice.apply(msg_data))
+console.log( "Encoded = %j", Array.prototype.slice.apply( msg_data ) );
 
-message = dnsd.parse(msg_data)
+message = dnsd.decode( msg_data );
 
-console.log('Round trip:')
-console.dir(message)
+console.log( "Round trip:" );
+console.dir( message );
 ```
 
 Output:
@@ -243,14 +256,14 @@ Round trip:
 
 ## Defaults
 
-`dnsd` is [defaultable][def]. The option `convenient` (`true` by default) adds convenience code when running a server.  Convenience mode adds several features, mostly to build standards-compliant name servers.
+`dnsd` is [defaultable][def].
 
 ```javascript
-var dnsd_easy = require('dnsd')
-var dnsd_hard = dnsd_easy.defaults({convenient: false})
+var dnsd = require( "dnsd" );
+var dnsd_custom = dnsd.defaults( { ttl: 180 } );
 ```
 
-First, your handler's response object already has `.type = "response"` set; then there are many helpers processing your response:
+## Convenience Support
 
 * You can pass a value to `res.end()`, with special handling depending on type:
   * Array: those values will be added to the `res.answer` section.
@@ -260,11 +273,10 @@ First, your handler's response object already has `.type = "response"` set; then
 * Responses to an `A` query with no answers will add the `SOA` record to the response.
 * If the response records are missing a TTL, use the one from the `.zone()` definition (the `SOA` record)
 
-Without convenience mode, dnsd will simply send your response verbatim, as you define it (or throw an encoding error for missing or bad data).
 
 ## Tests
 
-Follow uses [node-tap][tap]. If you clone this Git repository, tap is included.
+This code is tested with [node-tap][tap].
 
     $ tap test
     ok test/api.js ........................................ 10/10
