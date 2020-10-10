@@ -6,7 +6,7 @@
 
 const Util = require( "util" );
 
-const Parse = require( "./decode" );
+const Decode = require( "./decode" );
 const { Encoder } = require( "./encode" );
 const { typeToLabel, classToLabel } = require( "./constants" );
 
@@ -78,7 +78,7 @@ class DNSMessage {
 			Object.assign( this, body );
 
 			for ( const section of SECTIONS ) {
-				const records = this[section];
+				const records = this[section] = [];
 
 				if ( Array.isArray( records ) )
 					records.forEach( ( record, i ) => {
@@ -87,16 +87,6 @@ class DNSMessage {
 			}
 		} else {
 			throw new Error( "DNSMessage must be created with raw buffer or object describing message content" );
-		}
-
-		// EDNS processing. For now, just remove those records.
-		for ( const section of SECTIONS ) {
-			if ( this[section] ) {
-				this[section] = this[section].filter( record => !record.edns );
-
-				if ( this[section].length === 0 )
-					delete this[section];
-			}
 		}
 	}
 
@@ -107,31 +97,30 @@ class DNSMessage {
 	 * @returns {void}
 	 */
 	parse( body ) {
-		this.id = Parse.id( body );
-		this.type = Parse.qr( body ) === 0 ? "request" : "response";
+		this.id = Decode.id( body );
+		this.type = Decode.qr( body ) === 0 ? "request" : "response";
 
-		this.responseCode = Parse.rcode( body );
+		this.responseCode = Decode.rcode( body );
 
 		const opcodeNames = [ "query", "iquery", "status", null, "notify", "update" ];
-		const opcode = Parse.opcode( body );
+		const opcode = Decode.opcode( body );
 		this.opcode = opcodeNames[opcode] || null;
 
-		this.authoritative = Boolean( Parse.aa( body ) );
-		this.truncated = Boolean( Parse.tc( body ) );
-		this.recursionDesired = Boolean( Parse.rd( body ) );
-		this.recursionAvailable = Boolean( Parse.ra( body ) );
-		this.authenticated = Boolean( Parse.ad( body ) );
-		this.checkingDisabled = Boolean( Parse.cd( body ) );
+		this.authoritative = Boolean( Decode.aa( body ) );
+		this.truncated = Boolean( Decode.tc( body ) );
+		this.recursionDesired = Boolean( Decode.rd( body ) );
+		this.recursionAvailable = Boolean( Decode.ra( body ) );
+		this.authenticated = Boolean( Decode.ad( body ) );
+		this.checkingDisabled = Boolean( Decode.cd( body ) );
 
-		const sectionsCache = Parse.sections( body );
+		const sectionsCache = Decode.sections( body );
 
 		for ( const section of SECTIONS ) {
-			const count = Parse.recordCount( body, section );
-			if ( count ) {
-				this[section] = [];
+			const count = Decode.recordCount( body, section );
+			const records = this[section] = new Array( count );
 
-				for ( let i = 0; i < count; i++ )
-					this[section].push( new DNSRecord( body, section, i, sectionsCache ) );
+			for ( let i = 0; i < count; i++ ) {
+				records[i] = new DNSRecord( body, section, i, sectionsCache );
 			}
 		}
 	}
@@ -162,15 +151,15 @@ class DNSMessage {
 			Util.format( "Response Code      : %d", this.responseCode ),
 		];
 
-		SECTIONS.forEach( section => {
-			if ( this[section] ) {
+		for ( const section of SECTIONS ) {
+			if ( this[section].length > 0 ) {
 				info.push( Util.format( ";; %s SECTION:", section.toUpperCase() ) );
 
-				this[section].forEach( record => {
+				for ( const record of this[section] ) {
 					info.push( record.toString() );
-				} );
+				}
 			}
-		} );
+		}
 
 		return info.join( "\n" );
 	}
@@ -185,24 +174,29 @@ class DNSMessage {
  * @property {string} class network class of resource record ('IN', 'None' 'Unknown')
  * @property {number} ttl time to live, number of seconds for caching this record
  * @property {?(object|string|Array)} data record data in type-specific format, null if not applicable
+ * @property {?RawEDNSResourceRecord} edns EDNS-related information in case of record being OPT RR in compliance with RFC 6891
  */
 class DNSRecord {
 	/**
 	 * @param {Buffer|object} body sequence of octets describing DNS record in wire format or data of DNS record extracted before
 	 * @param {string} sectionName name of DNS message section this record is associated with
-	 * @param {number} recordNum record's index into seleted section's set of records
+	 * @param {number} recordNum record's index into selected section's set of records
 	 * @param {ParsedSectionsData} sectionsCache previously parsed information on records per section
 	 */
-	constructor( body, sectionName, recordNum, sectionsCache ) {
+	constructor( body, sectionName = undefined, recordNum = NaN, sectionsCache = null ) {
 		this.name = null;
 		this.type = null;
 		this.class = null;
 
-		if ( Buffer.isBuffer( body ) )
-			this.parse( body, sectionName, recordNum, sectionsCache || body );
-		else if ( typeof body === "object" )
+		if ( Buffer.isBuffer( body ) ) {
+			if ( sectionName != null && recordNum > -1 ) {
+				this.parse( body, sectionName, recordNum, sectionsCache || body );
+			} else {
+				throw new Error( "missing section name and record index for decoding record from wire format" );
+			}
+		} else if ( typeof body === "object" ) {
 			Object.keys( body ).forEach( key => { this[key] = body[key]; } );
-		else
+		} else
 			throw new Error( "Must provide a buffer or object argument with message contents" );
 	}
 
@@ -216,32 +210,36 @@ class DNSRecord {
 	 * @returns {void}
 	 */
 	parse( body, sectionName, recordNum, sections ) {
-		this.name = Parse.recordName( sections, sectionName, recordNum );
+		const record = Decode.getRecord( sections, sectionName, recordNum );
 
-		const type = Parse.recordType( sections, sectionName, recordNum );
+		if ( sectionName === "additional" && this.edns ) {
+			this.edns = record.edns;
 
-		this.type = typeToLabel( type );
-		if ( ! this.type )
-			throw new Error( "Record " + recordNum + ' in section "' + sectionName + '" has unknown type: ' + type );
+			this.name = "";
+			this.class = "IN";
+			this.type = "OPT";
 
-		if ( sectionName === "additional" && this.type === "OPT" && this.name === "" ) {
-			// EDNS record
-			this.edns = true;
-			delete this.name;
-			delete this.class;
-		} else {
-			// Normal record
-			this.class = classToLabel( Parse.recordClass( sections, sectionName, recordNum ) );
-			if ( !this.class )
-				throw new Error( "Record " + recordNum + ' in section "' + sectionName + '" has unknown class: ' + type );
-
-			if ( sectionName === "question" )
-				return;
-
-			this.ttl = Parse.recordTtl( sections, sectionName, recordNum );
+			return;
 		}
 
-		const rdata = Parse.recordData( sections, sectionName, recordNum );
+		this.edns = null;
+
+		this.name = record.name;
+		this.class = classToLabel( record.class );
+		this.type = typeToLabel( record.type );
+
+		if ( !this.class )
+			throw new Error( `Record #${recordNum} in section "${sectionName} has unknown class #${record.class}` );
+
+		if ( !this.type )
+			throw new Error( `Record #${recordNum} in section "${sectionName}" has unknown type #${record.type}` );
+
+		if ( sectionName === "question" )
+			return;
+
+		this.ttl = record.ttl;
+
+		const rdata = record.data;
 
 		switch ( this.kind() ) {
 			case "IN A" :
@@ -259,11 +257,11 @@ class DNSRecord {
 			case "IN NS" :
 			case "IN CNAME" :
 			case "IN PTR" :
-				this.data = Parse.uncompress( body, rdata );
+				this.data = Decode.uncompress( body, rdata );
 				break;
 
 			case "IN TXT" :
-				this.data = Parse.txt( body, rdata );
+				this.data = Decode.txt( body, rdata );
 				if ( this.data.length === 0 )
 					this.data = "";
 				else if ( this.data.length === 1 )
@@ -271,23 +269,23 @@ class DNSRecord {
 				break;
 
 			case "IN MX" :
-				this.data = Parse.mx( body, rdata );
+				this.data = Decode.mx( body, rdata );
 				break;
 
 			case "IN SRV" :
-				this.data = Parse.srv( body, rdata );
+				this.data = Decode.srv( body, rdata );
 				break;
 
 			case "IN SOA" :
-				this.data = Parse.soa( body, rdata );
+				this.data = Decode.soa( body, rdata );
 				this.data.rname = this.data.rname.replace( /\./, "@" );
 				break;
 
 			case "IN DS" :
 				this.data = {
-					key_tag: ( rdata[0] << 8 ) + rdata[1],                      // eslint-disable-line camelcase
+					keyTag: ( rdata[0] << 8 ) + rdata[1],
 					algorithm: rdata[2],
-					digest_type: rdata[3],                                      // eslint-disable-line camelcase
+					digestType: rdata[3],
 					digest: rdata.slice( 4 ).toJSON(), // Convert to a list of numbers.
 				};
 				break;
@@ -311,7 +309,7 @@ class DNSRecord {
 	 * @returns {string} string combining class and type of resource record
 	 */
 	kind() {
-		return this.edns ? "IN OPT" : this.class + " " + this.type;
+		return this.class + " " + this.type;
 	}
 
 	/**

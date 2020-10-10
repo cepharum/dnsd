@@ -4,7 +4,7 @@
 
 "use strict";
 
-const Constants = require( "./constants" );
+const { typeToLabel } = require( "./constants" );
 
 
 /**
@@ -26,11 +26,33 @@ exports.ad = msg => ( msg.readUInt8( 3 ) >> 5 ) & 0x01;
 exports.cd = msg => ( msg.readUInt8( 3 ) >> 4 ) & 0x01;
 exports.rcode = msg => msg.readUInt8( 3 ) & 0x0f;
 
-exports.recordName = ( msg, sectionName, offset ) => getRecord( msg, sectionName, offset ).name;
-exports.recordClass = ( msg, sectionName, offset ) => getRecord( msg, sectionName, offset ).class;
-exports.recordType = ( msg, sectionName, offset ) => getRecord( msg, sectionName, offset ).type;
-exports.recordTtl = ( msg, sectionName, offset ) => getRecord( msg, sectionName, offset ).ttl;
-exports.recordData = ( msg, sectionName, offset ) => getRecord( msg, sectionName, offset ).data;
+
+/**
+ * Extracts record selected by its containing section of message and its index
+ * inside that section from provided DNS message.
+ *
+ * @param {Buffer|ParsedSectionsData} msg sequence of octets describing full DNS message or previously extracted sections data
+ * @param {string} sectionName name of section to extract
+ * @param {number} offset index of record in selected section to extract
+ * @returns {object} selected record
+ */
+exports.getRecord = ( msg, sectionName, offset ) => {
+	if ( typeof offset !== "number" || isNaN( offset ) || offset < 0 )
+		throw new Error( "Offset must be a natural number" );
+
+	const sections = Buffer.isBuffer( msg ) ? exports.sections( msg ) : msg;
+
+	const records = sections[sectionName];
+	if ( !records )
+		throw new Error( `No such section: "${sectionName}"` );
+
+	const record = records[offset];
+	if ( !record )
+		throw new Error( `Bad offset for section "${sectionName}": ${offset}` );
+
+	return record;
+};
+
 exports.recordCount = ( msg, name ) => {
 	if ( name === "question" )
 		return msg.readUInt16BE( 4 );
@@ -76,9 +98,9 @@ exports.sections = msg => {
 		for ( let i = 0; i < numRecords; i++ ) {
 			const record = collector[i] = {};
 
-			const data = compileName( msg, null, position );
-			record.name = data.segments.join( "." );
-			position += data.length;
+			const { segments, length } = compileName( msg, null, position );
+			const name = segments.join( "." );
+			position += length;
 
 			const typeValue = record.type = msg.readUInt16BE( position );
 			const classValue = msg.readUInt16BE( position + 2 );
@@ -89,29 +111,32 @@ exports.sections = msg => {
 				const rdataLength = msg.readUInt16BE( position + 4 );
 
 				position += 6;
-				record.data = msg.slice( position, position + rdataLength );
+				const data = msg.slice( position, position + rdataLength );
 
 				position += rdataLength;
 
-				if ( Constants.type( typeValue ) === "OPT" ) {
-					// EDNS
-					if ( record.name !== "" )
-						throw new Error( `invalid EDNS: name of OPT RR must be empty, but found "${record.name}"` );
+				if ( typeToLabel( typeValue ) === "OPT" ) {
+					if ( name !== "" )
+						throw new Error( `invalid EDNS: name of OPT pseudo-RR must be empty, but found "${record.name}"` );
 
-					record.udpSize = classValue;
+					record.edns = true;
+					record.udpSize = Math.max( 512, classValue || 0 );
 
-					record.extendedRcode = ttl >> 24;
-					record.ednsVersion = ( ttl >> 16 ) & 0xff;
-					record.zero = ttl >> 8;
+					record.extendedResult = ttl >> 24;
+					record.version = ( ttl >> 16 ) & 0xff;
+					record.flagDO = Boolean( ttl & 0x8000 );
+					record.flags = ttl & 0x7FFF;
 
-					record.data = Array.prototype.slice.call( record.data );
+					record.options = extractEDNSOptions( data );
 
 					continue;
 				}
 
 				record.ttl = ttl;
+				record.data = data;
 			}
 
+			record.name = name;
 			record.class = classValue;
 			record.type = typeValue;
 		}
@@ -211,7 +236,7 @@ exports.uncompress = ( msg, sub = null, offset = 0 ) => compileName( msg, sub, o
  * @param {Buffer} fullMessage sequence of octets describing whole DNS message in wire format
  * @param {Buffer} slice sequence of octets describing segment of that DNS message
  * @param {int} offset 0-based index into slice (or fullMessage when omitted) name should be extracted from
- * @returns {{segments: [], length: *}} segments of extracted domain name, number of octets occupied by name up to first encountered pointer
+ * @returns {{segments: string[], length: number}} segments of extracted domain name, number of octets occupied by name up to first encountered pointer
  */
 function compileName( fullMessage, slice = null, offset = 0 ) {
 	if ( typeof offset !== "number" || isNaN( offset ) || offset < 0 || offset > fullMessage.length )
@@ -278,44 +303,43 @@ function compileName( fullMessage, slice = null, offset = 0 ) {
 }
 
 /**
- * Extracts record selected by its containing section of message and its index
- * inside that section from provided DNS message.
+ * Extracts EDNS-compliant options from record data of OPT RR.
  *
- * @param {Buffer|ParsedSectionsData} msg sequence of octets describing full DNS message or previously extracted sections data
- * @param {string} sectionName name of section to extract
- * @param {number} offset index of record in selected section to extract
- * @returns {object} selected record
+ * @param {Buffer} buffer raw record data of OPT RR
+ * @returns {EDNSOption[]} extracted list of EDNS options
  */
-function getRecord( msg, sectionName, offset ) {
-	if ( typeof offset !== "number" || isNaN( offset ) || offset < 0 )
-		throw new Error( "Offset must be a natural number" );
+function extractEDNSOptions( buffer ) {
+	const options = [];
+	let offset = 0;
 
-	const sections = Buffer.isBuffer( msg ) ? exports.sections( msg ) : msg;
+	while ( offset < buffer.length ) {
+		const code = buffer.readUInt16BE( offset );
+		offset += 2;
 
-	const records = sections[sectionName];
-	if ( !records )
-		throw new Error( `No such section: "${sectionName}"` );
+		const length = buffer.readUInt16BE( offset );
+		offset += 2;
 
-	const record = records[offset];
-	if ( !record )
-		throw new Error( `Bad offset for section "${sectionName}": ${offset}` );
+		const data = buffer.slice( offset, offset + length );
+		offset += length;
 
-	return record;
+		options.push( { code, data } );
+	}
+
+	return options;
 }
-
 
 
 /**
  * @typedef {object} MXData
  * @property {number} weight weight of MX service in comparison to other MX services defined
- * @property {string} target domain name of host providing MX service
+ * @property {string} name domain name of host providing MX service
  */
 
 /**
  * @typedef {object} SRVData
  * @property {number} priority service priority
  * @property {number} weight service weight
- * @property {port} port IP port service is listening on
+ * @property {number} port IP port service is listening on
  * @property {string} target domain name of host providing described service
  */
 
@@ -331,5 +355,37 @@ function getRecord( msg, sectionName, offset ) {
  */
 
 /**
- * @typedef {object<string,object[]>} ParsedSectionsData
+ * @typedef {object} RawRegularResourceRecord
+ * @property {string} name name of resource
+ * @property {number} class class identifier
+ * @property {number} type type identifier of resource
+ * @property {number} ttl time to live
+ * @property {Buffer} data record's binary encoded data (payload)
+ */
+
+/**
+ * Represents information of pseudo-RR of type OPT as defined in RFC 6891.
+ *
+ * @typedef {object} RawEDNSResourceRecord
+ * @property {boolean} edns set true to indicate current record being OPT RR of EDNS
+ * @property {number} udpSize UDP message size accepted by peer
+ * @property {number} extendedResult extended result code
+ * @property {number} version applicable version of EDNS
+ * @property {boolean} flagDO true if DO flag is set
+ * @property {number} flags bit set containing additional flags
+ * @property {EDNSOption[]} options options included with EDNS record
+ */
+
+/**
+ * @typedef {object} EDNSOption
+ * @property {number} code option code
+ * @property {Buffer} data raw option data
+ */
+
+/**
+ * @typedef {RawRegularResourceRecord|RawEDNSResourceRecord} RawResourceRecord
+ */
+
+/**
+ * @typedef {object<string,RawResourceRecord[]>} ParsedSectionsData
  */

@@ -8,7 +8,7 @@ const Net = require( "net" );
 const Dgram = require( "dgram" );
 const { EventEmitter } = require( "events" );
 
-const { DNSMessage } = require( "./message" );
+const { DNSMessage, DNSRecord } = require( "./message" );
 const { seconds: asSeconds, serial: asSerial } = require( "./convenient" );
 
 
@@ -74,21 +74,20 @@ class DNSServer extends EventEmitter {
 	 * @returns {DNSServer} current server for fluent interface
 	 */
 	zone( domainName, primaryNameServer, adminAddress, serial, refresh, retry, expire, ttl ) {
-		let record = domainName;
-
-		if ( typeof record !== "object" )
-			record = { class: "IN",
-				type: "SOA",
-				name: domainName,
-				data: {
-					mname: primaryNameServer,
-					rname: adminAddress,
-					serial: asSerial( serial ),
-					refresh: asSeconds( refresh ),
-					retry: asSeconds( retry ),
-					expire: asSeconds( expire ),
-					ttl: asSeconds( ttl || 0 ),
-				} };
+		const record = new DNSRecord( {
+			class: "IN",
+			type: "SOA",
+			name: domainName,
+			data: {
+				mname: primaryNameServer,
+				rname: adminAddress,
+				serial: asSerial( serial ),
+				refresh: asSeconds( refresh ),
+				retry: asSeconds( retry ),
+				expire: asSeconds( expire ),
+				ttl: asSeconds( ttl || 0 ),
+			}
+		} );
 
 		this.zones[record.name] = record;
 
@@ -181,6 +180,14 @@ class DNSServer extends EventEmitter {
 			remotePort: connection.remotePort,
 			server: this,
 			send: response => new Promise( ( resolve, reject ) => {
+				if ( response == null ) {
+					// don't waste a connection on a client asking for data this
+					// server isn't authoritative for
+					connection.end();
+					resolve();
+					return;
+				}
+
 				if ( !Buffer.isBuffer( response ) ) {
 					throw new Error( "invalid response, must be Buffer" );
 				}
@@ -247,6 +254,11 @@ class DNSServer extends EventEmitter {
 			remotePort: info.port,
 			server: this,
 			send: response => new Promise( ( resolve, reject ) => {
+				if ( response == null ) {
+					resolve();
+					return;
+				}
+
 				if ( !Buffer.isBuffer( response ) ) {
 					throw new Error( "invalid response, must be Buffer" );
 				}
@@ -307,11 +319,11 @@ class DNSRequest extends DNSMessage {
  */
 class DNSResponse extends DNSMessage {
 	/**
-	 * @param {Buffer} query describes querying DNS message to respond to
+	 * @param {Buffer} data describes querying DNS message to respond to
 	 * @param {ServerSocket} connection describes socket used to receive the query
 	 */
-	constructor( query, connection ) {
-		super( query );
+	constructor( data, connection ) {
+		super( data );
 
 		this.question = this.question || [];
 		this.answer = this.answer || [];
@@ -354,45 +366,34 @@ class DNSResponse extends DNSMessage {
 			value = undefined;                                                  // eslint-disable-line no-param-reassign
 		} else if ( value && typeof value == "object" ) {
 			// eslint-disable-next-line consistent-this
-			that = new this.constructor( value, this.connection );
+			that = new DNSResponse( value, this.connection );
 			value = undefined;                                                  // eslint-disable-line no-param-reassign
 		}
 
 
-		const questions = that.question || [];
-		const answers = that.answer || [];
-		const authorities = that.authority || [];
-		const additionals = that.additional || [];
+		const questions = that.question = that.question || [];
+		const answer = that.answer = that.answer || [];
+		const authority = that.authority = that.authority || [];
+		const additional = that.additional = that.additional || [];
 
 		that.recursionAvailable = false;
 		that.authoritative = true;
 
 
-		// Find the zone of authority for this record, if any.
-		const question = questions[0];
-		let name = ( question && question.name ) || "";
-		let soaRecord;
-
-		while ( name.length > 0 ) {
-			const split = /^([^.\s]{1,63})(?:\.([^.\s].*))?$/.exec( name );
-			if ( !split ) {
-				throw new Error( "invalid name in query" );
+		for ( const question of questions ) {
+			const soaRecord = this.findZoneForName( question.name );
+			if ( !soaRecord ) {
+				// don't respond to questions regarding zones we aren't authoritative for
+				continue;
 			}
 
-			name = split[2] == null ? "" : split[2];
-
-			soaRecord = this.connection.server.zones[name];
-			if ( soaRecord )
-				break;
-		}
-
-		that.authoritative = Boolean( soaRecord );
-
-
-		if ( questions.length === 1 ) {
 			switch ( question.kind() ) {
 				case "IN A" :
-					if ( typeof value == "string" && answers.length === 0 ) {
+					if ( typeof value == "string" && answer.length === 0 ) {
+						if ( questions.length > 1 ) {
+							return Promise.reject( new Error( "can't handle simple answer to multiple questions" ) );
+						}
+
 						that.answer.push( {
 							class: "IN",
 							type: "A",
@@ -404,36 +405,67 @@ class DNSResponse extends DNSMessage {
 
 				case "IN SOA" :
 					// Respond with the SOA record for this zone if necessary and possible.
-					if ( answers.length === 0 && soaRecord && soaRecord.name === question.name )
+					if ( answer.length === 0 && soaRecord && soaRecord.name === question.name )
 						that.answer.push( soaRecord );
 					break;
 			}
+
+			// If the server is authoritative for a zone, add an SOA record if there is no good answer.
+			if ( soaRecord && questions.length === 1 && answer.length === 0 && authority.length === 0 )
+				that.authority.push( soaRecord );
+
+
+			const minTTL = Math.max( ( soaRecord ? soaRecord.data.ttl : this.connection.server.options.ttl ) || 1, 1 );
+
+			for ( const record of answer ) { wellFormedRecord( record, minTTL ); }
+			for ( const record of authority ) { wellFormedRecord( record, minTTL ); }
+			for ( const record of additional ) { wellFormedRecord( record, minTTL ); }
 		}
 
 
-		// If the server is authoritative for a zone, add an SOA record if there is no good answer.
-		if ( soaRecord && questions.length === 1 && answers.length === 0 && authorities.length === 0 )
-			that.authority.push( soaRecord );
-
-
-		const minTTL = ( soaRecord ? soaRecord.data.ttl : this.connection.server.options.ttl ) || 1;
-
-		answers.forEach( wellFormedRecord );
-		authorities.forEach( wellFormedRecord );
-		additionals.forEach( wellFormedRecord );
-
-		return that.connection.send( that.toBinary() );
+		return that.connection.send( that.answer.length > 0 || this.authority.length > 0 ? that.toBinary() : null );
 
 		/**
 		 * Fixes single DNS record.
 		 *
 		 * @param {DNSRecord} record record to be fixed
+		 * @param {number} minTTL minimum TTL to use when missing TTL in record
 		 * @returns {void}
 		 */
-		function wellFormedRecord( record ) {
-			record.class = record.class || "IN";                                // eslint-disable-line no-param-reassign
-			record.ttl = Math.max( record.ttl || 1, minTTL );                   // eslint-disable-line no-param-reassign
+		function wellFormedRecord( record, minTTL ) {
+			if ( !record.class ) {
+				record.class = "IN";                                            // eslint-disable-line no-param-reassign
+			}
+
+			if ( !record.ttl ) {
+				record.ttl = minTTL;                                            // eslint-disable-line no-param-reassign
+			}
 		}
+	}
+
+	/**
+	 * Looks for local definition of zone covering provided name.
+	 *
+	 * @param {string} name domain name
+	 * @returns {?DNSRecord} found SOA record
+	 */
+	findZoneForName( name ) {
+		let soaRecord;
+
+		while ( name.length > 0 ) {
+			soaRecord = this.connection.server.zones[name];
+			if ( soaRecord )
+				return soaRecord;
+
+			const split = /^([^.\s]{1,63})(?:\.([^.\s].*))?$/.exec( name );
+			if ( !split ) {
+				throw new Error( "invalid name in query" );
+			}
+
+			name = split[2] == null ? "" : split[2];                            // eslint-disable-line no-param-reassign
+		}
+
+		return null;
 	}
 }
 
@@ -441,6 +473,10 @@ class DNSResponse extends DNSMessage {
 module.exports = function createServer( requestHandler, options = {} ) {    // eslint-disable-line no-param-reassign
 	return new DNSServer( requestHandler, options );
 };
+
+module.exports.DNSServer = DNSServer;
+module.exports.DNSRequest = DNSRequest;
+module.exports.DNSResponse = DNSResponse;
 
 
 /**
