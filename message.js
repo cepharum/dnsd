@@ -1,6 +1,4 @@
 // Copyright 2012 Iris Couch, all rights reserved.
-//
-// Test displaying DNS records
 
 "use strict";
 
@@ -8,35 +6,8 @@ const Util = require( "util" );
 
 const Decode = require( "./decode" );
 const { Encoder } = require( "./encode" );
-const { typeToLabel, classToLabel } = require( "./constants" );
+const { SECTIONS, typeToLabel, classToLabel } = require( "./constants" );
 
-const SECTIONS = [ "question", "answer", "authority", "additional" ];
-
-// A DNS message.  This is an easy-to-understand object representation of
-// standard DNS queries and responses.
-//
-// Attributes:
-// * id                  - a number representing the unique query ID
-// * type                - "request" or "response"
-// * response            - Number (server response code)
-// * opcode              - "query", "iquery", "status", "unassigned", "notify", "update"
-// * authoritative       - Boolean
-// * truncated           - Boolean
-// * recursionDesired   - Boolean
-// * recursionAvailable - Boolean
-// * authenticated       - Boolean
-// * checkingDisabled   - Boolean
-//
-// Optional attributes:
-// * question (optional) - Array of the question section
-// * answer (optional) - Array of the answer section
-// * authority (optional) - Array of the authority section
-// * additional (optional) - Array of the additional section
-//
-// Methods:
-// * toString() - return a human-readable representation of this message
-// * toJSON() - Return a JSON-friendly represenation of this message
-// * toBinary() - Return a buffer of the encoded message
 
 /**
  * Implements representation of a single DNS message.

@@ -5,6 +5,8 @@
 "use strict";
 
 module.exports = {
+	SECTIONS: [ "question", "answer", "authority", "additional" ],
+
 	type: swapType,
 	class: swapClass,
 	typeToLabel,

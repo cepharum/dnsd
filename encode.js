@@ -4,8 +4,7 @@
 
 "use strict";
 
-const { typeToNumber, classToNumber } = require( "./constants" );
-const SECTIONS = [ "question", "answer", "authority", "additional" ];
+const { SECTIONS, typeToNumber, classToNumber } = require( "./constants" );
 
 
 /**

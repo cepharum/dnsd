@@ -4,7 +4,7 @@
 
 "use strict";
 
-const { typeToLabel } = require( "./constants" );
+const { SECTIONS, typeToLabel } = require( "./constants" );
 
 
 /**
@@ -80,20 +80,12 @@ exports.sections = msg => {
 		msg.__decoded++;                                                        // eslint-disable-line no-param-reassign
 	}
 
-	const states = [ "question", "answer", "authority", "additional" ];
 	const records = {};
-	const recordCounts = {
-		question: exports.recordCount( msg, "question" ),
-		answer: exports.recordCount( msg, "answer" ),
-		authority: exports.recordCount( msg, "authority" ),
-		additional: exports.recordCount( msg, "additional" ),
-	};
 	let position = 12; // first byte of the first section
 
-
-	for ( const stateName of states ) {
-		const numRecords = recordCounts[stateName];
-		const collector = records[stateName] = new Array( numRecords );
+	for ( const sectionName of SECTIONS ) {
+		const numRecords = exports.recordCount( msg, sectionName );
+		const collector = records[sectionName] = new Array( numRecords );
 
 		for ( let i = 0; i < numRecords; i++ ) {
 			const record = collector[i] = {};
@@ -106,7 +98,7 @@ exports.sections = msg => {
 			const classValue = msg.readUInt16BE( position + 2 );
 			position += 4;
 
-			if ( stateName !== "question" ) {
+			if ( sectionName !== "question" ) {
 				const ttl = msg.readUInt32BE( position );
 				const rdataLength = msg.readUInt16BE( position + 4 );
 
