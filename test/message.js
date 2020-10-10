@@ -53,20 +53,20 @@ test( "Message attributes", function( t ) {
 	t.equal( msg.opcode, "query", "DNS opcode" );
 	t.equal( msg.authoritative, true, "Authoritative message" );
 	t.equal( msg.truncated, false, "Non-truncated message" );
-	t.equal( msg.recursion_desired, true, "Recursion-desired in response" );
+	t.equal( msg.recursionDesired, true, "Recursion-desired in response" );
 	t.equal( msg.responseCode, 0, "Successful response" );
 
 	msg = decode( packet( "oreilly.com-query" ) );
 	t.equal( msg.type, "request", "DNS request" );
 	t.equal( msg.authoritative, false, "Non-authoritative request" );
-	t.equal( msg.recursion_desired, true, "Recursion-desired in request" );
+	t.equal( msg.recursionDesired, true, "Recursion-desired in request" );
 
 	msg = decode( packet( "dynamic-update" ) );
 	t.equal( msg.opcode, "update", "DNS update opcode" );
 
 	msg = decode( packet( "www.microsoft.com-response" ) );
-	t.equal( msg.recursion_desired, false, "No recursion desired" );
-	t.equal( msg.recursion_available, false, "No recursion available" );
+	t.equal( msg.recursionDesired, false, "No recursion desired" );
+	t.equal( msg.recursionAvailable, false, "No recursion available" );
 
 	t.end();
 } );

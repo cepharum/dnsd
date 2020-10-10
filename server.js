@@ -364,7 +364,8 @@ class DNSResponse extends DNSMessage {
 		const authorities = that.authority || [];
 		const additionals = that.additional || [];
 
-		that.recursion_available = false;                                       // eslint-disable-line camelcase
+		that.recursionAvailable = false;
+		that.authoritative = true;
 
 
 		// Find the zone of authority for this record, if any.

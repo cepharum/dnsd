@@ -30,8 +30,8 @@ test( "Display a message", function( t ) {
 		t.equal( obj.opcode, "query", "JSON round-trip: opcode" );
 		t.equal( obj.authoritative, true, "JSON round-trip: authoritative" );
 		t.equal( obj.truncated, false, "JSON round-trip: truncated" );
-		t.equal( obj.recursion_desired, true, "JSON round-trip: recursion_desired" );
-		t.equal( obj.recursion_available, true, "JSON round-trip: recursion_available" );
+		t.equal( obj.recursionDesired, true, "JSON round-trip: recursionDesired" );
+		t.equal( obj.recursionAvailable, true, "JSON round-trip: recursionAvailable" );
 		t.equal( obj.responseCode, 0, "JSON round-trip: responseCode" );
 
 		t.end();

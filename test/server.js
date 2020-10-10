@@ -86,7 +86,7 @@ test( "Network queries", function( t ) {
 		t.ok( expected, "Found expected request: " + name );
 		t.equal( req.id, expected.id, "ID match: " + name );
 		t.equal( req.opcode, expected.opcode, "Opcode match: " + name );
-		t.equal( req.recursion_desired, expected.recursion, "Recursion match: " + name );
+		t.equal( req.recursionDesired, expected.recursion, "Recursion match: " + name );
 
 		res.end();
 

@@ -22,10 +22,10 @@ const SECTIONS = [ "question", "answer", "authority", "additional" ];
 // * opcode              - "query", "iquery", "status", "unassigned", "notify", "update"
 // * authoritative       - Boolean
 // * truncated           - Boolean
-// * recursion_desired   - Boolean
-// * recursion_available - Boolean
+// * recursionDesired   - Boolean
+// * recursionAvailable - Boolean
 // * authenticated       - Boolean
-// * checking_disabled   - Boolean
+// * checkingDisabled   - Boolean
 //
 // Optional attributes:
 // * question (optional) - Array of the question section
@@ -47,10 +47,14 @@ const SECTIONS = [ "question", "answer", "authority", "additional" ];
  * @property {string} opcode one out of "query", "iquery", "status", "unassigned", "notify", "update"
  * @property {boolean} authoritative indicates if message is an authoritative answer
  * @property {boolean} truncated indicates if message has been truncated due to oversize
- * @property {boolean} recursion_desired indicates query is asking for recursive processing
- * @property {boolean} recursion_available indicates whether service is supporting recursive processing of queries
+ * @property {boolean} recursionDesired indicates query is asking for recursive processing
+ * @property {boolean} recursionAvailable indicates whether service is supporting recursive processing of queries
  * @property {boolean} authenticated marks response message to be authenticated by server
- * @property {boolean} checking_disabled indicates in a request message that client is accepting non-authenticated data in response
+ * @property {boolean} checkingDisabled indicates in a request message that client is accepting non-authenticated data in response
+ * @property {DNSRecord[]} question records in question section
+ * @property {DNSRecord[]} answer records in answer section
+ * @property {DNSRecord[]} authority records in authority section
+ * @property {DNSRecord[]} additional records in additional section
  */
 class DNSMessage {
 	/**
@@ -63,13 +67,10 @@ class DNSMessage {
 		this.opcode = null;
 		this.authoritative = null;
 		this.truncated = null;
-		// eslint-disable-next-line camelcase
-		this.recursion_desired = null;
-		// eslint-disable-next-line camelcase
-		this.recursion_available = null;
+		this.recursionDesired = null;
+		this.recursionAvailable = null;
 		this.authenticated = null;
-		// eslint-disable-next-line camelcase
-		this.checking_disabled = null;
+		this.checkingDisabled = null;
 
 		if ( Buffer.isBuffer( body ) ) {
 			this.parse( body );
@@ -117,13 +118,10 @@ class DNSMessage {
 
 		this.authoritative = Boolean( Parse.aa( body ) );
 		this.truncated = Boolean( Parse.tc( body ) );
-		// eslint-disable-next-line camelcase
-		this.recursion_desired = Boolean( Parse.rd( body ) );
-		// eslint-disable-next-line camelcase
-		this.recursion_available = Boolean( Parse.ra( body ) );
+		this.recursionDesired = Boolean( Parse.rd( body ) );
+		this.recursionAvailable = Boolean( Parse.ra( body ) );
 		this.authenticated = Boolean( Parse.ad( body ) );
-		// eslint-disable-next-line camelcase
-		this.checking_disabled = Boolean( Parse.cd( body ) );
+		this.checkingDisabled = Boolean( Parse.cd( body ) );
 
 		const sectionsCache = Parse.sections( body );
 
@@ -159,8 +157,8 @@ class DNSMessage {
 			Util.format( "Opcode             : %s", this.opcode ),
 			Util.format( "Authoritative      : %s", this.authoritative ),
 			Util.format( "Truncated          : %s", this.truncated ),
-			Util.format( "Recursion Desired  : %s", this.recursion_desired ),
-			Util.format( "Recursion Available: %s", this.recursion_available ),
+			Util.format( "Recursion Desired  : %s", this.recursionDesired ),
+			Util.format( "Recursion Available: %s", this.recursionAvailable ),
 			Util.format( "Response Code      : %d", this.responseCode ),
 		];
 

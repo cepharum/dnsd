@@ -60,7 +60,7 @@ class Encoder {
 		byte |= msg.type === "response" ? 0x80 : 0x00;
 		byte |= msg.authoritative ? 0x04 : 0x00;
 		byte |= msg.truncated ? 0x02 : 0x00;
-		byte |= msg.recursion_desired ? 0x01 : 0x00;
+		byte |= msg.recursionDesired ? 0x01 : 0x00;
 
 		const opcodeNames = [ "query", "iquery", "status", null, "notify", "update" ];
 		const opcode = opcodeNames.indexOf( msg.opcode );
@@ -74,9 +74,9 @@ class Encoder {
 
 		// RA, Z, AD, CD, RCODE
 		byte = 0;
-		byte |= msg.recursion_available ? 0x80 : 0x00;
+		byte |= msg.recursionAvailable ? 0x80 : 0x00;
 		byte |= msg.authenticated ? 0x20 : 0x00;
-		byte |= msg.checking_disabled ? 0x10 : 0x00;
+		byte |= msg.checkingDisabled ? 0x10 : 0x00;
 		byte |= msg.responseCode & 0x0f;
 
 		this.header.writeUInt8( byte, 3 );
@@ -222,9 +222,9 @@ class Encoder {
 
 				case "IN DS" :
 					rdata = [
-						buf16( record.data.key_tag ),
+						buf16( record.data.keyTag ),
 						Buffer.from( [record.data.algorithm] ),
-						Buffer.from( [record.data.digest_type] ),
+						Buffer.from( [record.data.digestType] ),
 						Buffer.from( record.data.digest ),
 					];
 					break;

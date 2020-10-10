@@ -119,8 +119,8 @@ And test the address (A) response:
 Server output for these queries:
 
     Server running at 127.0.0.1:5353
-    127.0.0.1:34427/udp4 {"id":30176,"type":"request","responseCode":0,"opcode":"query","authoritative":false,"truncated":false,"recursion_desired":true,"recursion_available":false,"authenticated":false,"checking_disabled":false,"question":[{"name":"example.com","type":"SOA","class":"IN"}]}
-    127.0.0.1:59596/udp4 {"id":19419,"type":"request","responseCode":0,"opcode":"query","authoritative":false,"truncated":false,"recursion_desired":true,"recursion_available":false,"authenticated":false,"checking_disabled":false,"question":[{"name":"example.com","type":"A","class":"IN"}]}
+    127.0.0.1:34427/udp4 {"id":30176,"type":"request","responseCode":0,"opcode":"query","authoritative":false,"truncated":false,"recursionDesired":true,"recursionAvailable":false,"authenticated":false,"checkingDisabled":false,"question":[{"name":"example.com","type":"SOA","class":"IN"}]}
+    127.0.0.1:59596/udp4 {"id":19419,"type":"request","responseCode":0,"opcode":"query","authoritative":false,"truncated":false,"recursionDesired":true,"recursionAvailable":false,"authenticated":false,"checkingDisabled":false,"question":[{"name":"example.com","type":"A","class":"IN"}]}
 
 
 ## Example: MX Records
@@ -184,10 +184,10 @@ Output
     opcode: "query",
     authoritative: false,
     truncated: false,
-    recursion_desired: true,
-    recursion_available: true,
+    recursionDesired: true,
+    recursionAvailable: true,
     authenticated: false,
-    checking_disabled: false,
+    checkingDisabled: false,
     question: [ { name: "registry.npmjs.org", type: "A", class: "IN" } ],
     answer: [ 
         { 
@@ -223,7 +223,7 @@ const message = {
     type: "query", 
     id: 123, 
     opcode: "query", 
-    recursion_desired: true, 
+    recursionDesired: true, 
     question: questions
 };
 const msg_data = dnsd.encode( message );
@@ -247,10 +247,10 @@ Round trip:
   opcode: 'query',
   authoritative: false,
   truncated: false,
-  recursion_desired: true,
-  recursion_available: false,
+  recursionDesired: true,
+  recursionAvailable: false,
   authenticated: false,
-  checking_disabled: false,
+  checkingDisabled: false,
   question: [ { name: 'example.com', type: 'TXT', class: 'IN' } ] }
 ```
 
