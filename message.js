@@ -212,7 +212,7 @@ class DNSRecord {
 	parse( body, sectionName, recordNum, sections ) {
 		const record = Decode.getRecord( sections, sectionName, recordNum );
 
-		if ( sectionName === "additional" && this.edns ) {
+		if ( sectionName === "additional" && record.edns ) {
 			this.edns = record.edns;
 
 			this.name = "";
@@ -292,10 +292,6 @@ class DNSRecord {
 
 			case "NONE A" :
 				this.data = [];
-				break;
-
-			case "IN OPT" :
-				this.data = rdata;
 				break;
 
 			default :

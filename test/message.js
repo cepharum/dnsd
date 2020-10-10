@@ -76,9 +76,12 @@ test( "Message sections", function( t ) {
 
 	msg = decode( packet( "www.microsoft.com-query" ) );
 	t.type( msg.question, "Array", "Parse question section" );
-	t.type( msg.answer, "undefined", 'No "answer" section' );
-	t.type( msg.authority, "undefined", 'No "authority" section' );
-	t.type( msg.additional, "undefined", 'No "additional" section' );
+	t.type( msg.answer, "Array", "Always parse answer section" );
+	t.equal( msg.answer.length, 0, "Empty answer section" );
+	t.type( msg.authority, "Array", "Always parse authority section" );
+	t.equal( msg.authority.length, 0, "Empty authority section" );
+	t.type( msg.additional, "Array", "Always parse additional section" );
+	t.equal( msg.additional.length, 0, "Empty additional section" );
 
 	msg = decode( packet( "oreilly.com-response" ) );
 	t.type( msg.whatever, "undefined", 'No "whatever" section' );

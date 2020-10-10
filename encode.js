@@ -85,7 +85,11 @@ class Encoder {
 
 		for ( const section of SECTIONS ) {
 			for ( const record of msg[section] || [] ) {
-				this.record( section, record );
+				if ( record.edns ) {
+					this.ednsRecord( section, record );
+				} else {
+					this.record( section, record );
+				}
 			}
 		}
 
@@ -99,18 +103,49 @@ class Encoder {
 	}
 
 	/**
-	 * Encodes provided record in selected section of currently encoded message.
+	 * Encodes provided EDNS OPT pseudo-RR record in selected section of
+	 * currently encoded message.
+	 *
+	 * @param {string} sectionName name of section this record belongs to
+	 * @param {DNSRecord} record EDNS records to be encoded
+	 * @returns {void}
+	 */
+	ednsRecord( sectionName, record ) {
+		const chunks = [];
+
+		let buf = this.encodeName( "" );
+		chunks.push( buf );
+		this.position += buf.length;
+
+		let flags = 0;
+		flags += ( record.edns.extendedResult & 0xff ) << 24;
+		flags += ( record.edns.version & 0xff ) << 16;
+		flags += record.edns.flagDO ? 0x8000 : 0;
+
+		buf = Buffer.alloc( 8 );
+		buf.writeUInt16BE( 41, 0 );
+		buf.writeUInt16BE( record.edns.udpSize, 2 );
+		buf.writeUInt16BE( flags, 4 );
+		chunks.push( buf );
+		this.position += 8;
+
+		this[sectionName].push( Buffer.concat( chunks ) );
+	}
+
+	/**
+	 * Encodes provided resource record in selected section of currently encoded
+	 * message.
 	 *
 	 * @param {string} sectionName name of section this record belongs to
 	 * @param {DNSRecord} record instance of record to be encoded
 	 * @returns {void}
 	 */
 	record( sectionName, record ) {
-		const body = [];
+		const chunks = [];
 
 		// Write the record name.
 		let buf = this.encodeName( record.name );
-		body.push( buf );
+		chunks.push( buf );
 		this.position += buf.length;
 
 		const type = typeToNumber( record.type );
@@ -119,20 +154,20 @@ class Encoder {
 		// Write the type.
 		buf = Buffer.alloc( 2 );
 		buf.writeUInt16BE( type, 0 );
-		body.push( buf );
+		chunks.push( buf );
 		this.position += 2;
 
 		// Write the class.
 		buf = Buffer.alloc( 2 );
 		buf.writeUInt16BE( classValue, 0 );
-		body.push( buf );
+		chunks.push( buf );
 		this.position += 2;
 
 		if ( sectionName !== "question" ) {
 			// Write the TTL.
 			buf = Buffer.alloc( 4 );
 			buf.writeUInt32BE( record.ttl || 0, 0 );
-			body.push( buf );
+			chunks.push( buf );
 			this.position += 4;
 
 			// Write the rdata. Update the position now (the rdata length value) in case self.encode() runs.
@@ -242,16 +277,16 @@ class Encoder {
 			rdata = toOctetList( rdata );
 			buf = Buffer.alloc( 2 );
 			buf.writeUInt16BE( rdata.length, 0 );
-			body.push( buf );
+			chunks.push( buf );
 			this.position += 2;
 
 			// Write the rdata.
 			this.position += rdata.length;
 			if ( rdata.length > 0 )
-				body.push( Buffer.from( rdata ) );
+				chunks.push( Buffer.from( rdata ) );
 		}
 
-		this[sectionName].push( Buffer.concat( body ) );
+		this[sectionName].push( Buffer.concat( chunks ) );
 	}
 
 	/**
