@@ -15,11 +15,14 @@ const { RCODE } = require( "./constants" );
 
 const DefaultOptions = {
 	ttl: 3600,
+	debug: false,
 };
 
 
 /**
  * Implements DNS server.
+ *
+ * @property {object} options options customizing selected operations
  */
 class DNSServer extends EventEmitter {
 	/**
@@ -537,7 +540,7 @@ class DNSResponse extends DNSMessage {
 
 		const reply = answer.length > 0 || authority.length > 0 || ( this.edns && this.responseCode > 0 ) ? that.toBinary() : null;
 
-		if ( !reply ) {
+		if ( !reply && this.connection.server.options.debug ) {
 			console.debug( "ignoring request" );
 		}
 
