@@ -10,7 +10,7 @@ const { EventEmitter } = require( "events" );
 
 const { DNSMessage, DNSRecord } = require( "./message" );
 const { seconds: asSeconds, serial: asSerial } = require( "./convenient" );
-const { RCODES } = require( "./constants" );
+const { RCODE } = require( "./constants" );
 
 
 const DefaultOptions = {
@@ -29,7 +29,6 @@ class DNSServer extends EventEmitter {
 	constructor( requestHandler, options = {} ) {
 		super();
 
-		this.log = console;
 		this.zones = {};
 		this.options = Object.assign( {}, DefaultOptions, options );
 
@@ -49,11 +48,13 @@ class DNSServer extends EventEmitter {
 		this.udp.on( "message", ( msg, rInfo ) => { this.onUdp( msg, rInfo ); } );
 
 		const listening = { tcp: false, udp: false };
+
 		this.udp.once( "listening", function() {
 			listening.udp = true;
 			if ( listening.tcp )
 				this.emit( "listening" );
 		} );
+
 		this.tcp.once( "listening", function() {
 			listening.tcp = true;
 			if ( listening.udp )
@@ -74,13 +75,13 @@ class DNSServer extends EventEmitter {
 	 * @param {number} ttl negative TTL, number of seconds for resolvers to wait before querying name servers of zone again after failed attempts
 	 * @returns {DNSServer} current server for fluent interface
 	 */
-	zone( domainName, primaryNameServer, adminAddress, serial, refresh, retry, expire, ttl ) {
+	zone( domainName, primaryNameServer = null, adminAddress = "hostmaster", serial = undefined, refresh = 3600, retry = 1800, expire = 604800, ttl = 300 ) {
 		const record = new DNSRecord( {
 			class: "IN",
 			type: "SOA",
 			name: domainName,
 			data: {
-				mname: primaryNameServer,
+				mname: primaryNameServer || `ns1.${domainName}`,
 				rname: adminAddress,
 				serial: asSerial( serial ),
 				refresh: asSeconds( refresh ),
@@ -180,8 +181,8 @@ class DNSServer extends EventEmitter {
 			remoteAddress: connection.remoteAddress,
 			remotePort: connection.remotePort,
 			server: this,
-			send: response => new Promise( ( resolve, reject ) => {
-				if ( response == null ) {
+			send: reply => new Promise( ( resolve, reject ) => {
+				if ( reply == null ) {
 					// don't waste a connection on a client asking for data this
 					// server isn't authoritative for
 					connection.end();
@@ -189,17 +190,17 @@ class DNSServer extends EventEmitter {
 					return;
 				}
 
-				if ( !Buffer.isBuffer( response ) ) {
+				if ( !Buffer.isBuffer( reply ) ) {
 					throw new Error( "invalid response, must be Buffer" );
 				}
 
-				const length = response.length;
+				const length = reply.length;
 
 				if ( length > 65535 ) {
 					throw new Error( "TCP responses greater than 65535 bytes not supported" );
 				}
 
-				connection.end( Buffer.concat( [ Buffer.from( [ length >> 8, length & 0xff ] ), response ] ), error => {
+				connection.end( Buffer.concat( [ Buffer.from( [ length >> 8, length & 0xff ] ), reply ] ), error => {
 					if ( error ) {
 						reject( error );
 					} else {
@@ -252,27 +253,30 @@ class DNSServer extends EventEmitter {
 	 * @protected
 	 */
 	onUdp( query, info ) {
+		let response;                                                           // eslint-disable-line prefer-const
+
 		/** @type {ServerSocket} */
 		const socket = {
 			type: this.udp.type,
 			remoteAddress: info.address,
 			remotePort: info.port,
 			server: this,
-			send: response => new Promise( ( resolve, reject ) => {
-				if ( response == null ) {
+			send: reply => new Promise( ( resolve, reject ) => {
+				if ( reply == null ) {
 					resolve();
 					return;
 				}
 
-				if ( !Buffer.isBuffer( response ) ) {
+				if ( !Buffer.isBuffer( reply ) ) {
 					throw new Error( "invalid response, must be Buffer" );
 				}
 
-				if ( response.length > 512 ) {
-					throw new Error( "UDP responses greater than 512 bytes not yet implemented" );
+				const udpLimit = Math.max( 512, ( response.edns || {} ).udpSize || 1 );
+				if ( reply.length > udpLimit ) {
+					throw new Error( `UDP reply exceeds limit of ${udpLimit} bytes` );
 				}
 
-				this.udp.send( response, 0, response.length, info.port, info.address, error => {
+				this.udp.send( reply, 0, reply.length, info.port, info.address, error => {
 					if ( error ) {
 						reject( error );
 					} else {
@@ -283,7 +287,7 @@ class DNSServer extends EventEmitter {
 		};
 
 		const request = new DNSRequest( query, socket );
-		const response = new DNSResponse( query, socket );
+		response = new DNSResponse( query, socket );
 
 		if ( this.isValidEDNS( request, response ) ) {
 			this.emit( "request", request, response );
@@ -301,7 +305,7 @@ class DNSServer extends EventEmitter {
 		const records = request.findEDNSRecords();
 
 		if ( records.length > 1 || ( records.length === 1 && records[0].section !== "additional" ) ) {
-			this.respondOnInvalidEDNS( response, null, RCODES.FORMERR );
+			this.respondOnInvalidEDNS( response, RCODE.FORMERR );
 			return false;
 		}
 
@@ -309,7 +313,7 @@ class DNSServer extends EventEmitter {
 			const { record: { edns } } = records[0];
 
 			if ( edns.version > 0 ) {
-				this.respondOnInvalidEDNS( response, edns, RCODES.BADVERS );
+				this.respondOnInvalidEDNS( response, RCODE.BADVERS );
 				return false;
 			}
 		}
@@ -321,13 +325,12 @@ class DNSServer extends EventEmitter {
 	 * Responds to request with EDNS error.
 	 *
 	 * @param {DNSResponse} response response EDNS record is added to
-	 * @param {?RawEDNSResourceRecord} requestorEDNS EDNS record optionally found request
 	 * @returns {DNSRecord} EDNS record added to response
 	 */
-	addEDNSReply( response, requestorEDNS ) {
+	addEDNSReply( response ) {
 		const record = new DNSRecord( {
 			edns: {
-				udpSize: Math.max( requestorEDNS ? requestorEDNS.udpSize || 512 : 512, 512 ),
+				udpSize: Math.max( response.edns ? response.edns.udpSize || 512 : 512, 512 ),
 				extendedResult: 0,
 				version: 0,
 				flagDO: 0,
@@ -348,12 +351,11 @@ class DNSServer extends EventEmitter {
 	 * Responds to request with EDNS error.
 	 *
 	 * @param {DNSResponse} response response to use for replying
-	 * @param {?RawEDNSResourceRecord} requestorEDNS EDNS record optionally found request
 	 * @param {number} resultCode EDNS extended result code to use
 	 * @returns {void}
 	 */
-	respondOnInvalidEDNS( response, requestorEDNS, resultCode ) {
-		this.addEDNSReply( response, requestorEDNS );
+	respondOnInvalidEDNS( response, resultCode ) {
+		this.addEDNSReply( response );
 
 		response.responseCode = resultCode;                                     // eslint-disable-line no-param-reassign
 
@@ -400,7 +402,7 @@ class DNSRequest extends DNSMessage {
  * Implements common manager of response to incoming DNS query in context of
  * DNS server.
  *
- * @property {RawEDNSResourceRecord} requestorEDNS EDNS data extracted from request message
+ * @property {?RawEDNSResourceRecord} edns data of first encountered OPT RR in additional section of related request
  */
 class DNSResponse extends DNSMessage {
 	/**
@@ -410,13 +412,10 @@ class DNSResponse extends DNSMessage {
 	constructor( data, connection ) {
 		super( data );
 
-		const ednsRecords = this.findEDNSRecords();
-		this.requestorEDNS = ednsRecords.length === 1 && ednsRecords[0].section === "additional" ? ednsRecords.record.edns : null;
-
 		this.question = this.question || [];
-		this.answer = this.answer || [];
-		this.authority = this.authority || [];
-		this.additional = this.additional || [];
+		this.answer = [];
+		this.authority = [];
+		this.additional = [];
 
 		this.connection = connection;
 
@@ -468,47 +467,49 @@ class DNSResponse extends DNSMessage {
 		that.authoritative = true;
 
 
-		for ( const question of questions ) {
-			const soaRecord = this.findZoneForName( question.name );
-			if ( !soaRecord ) {
-				// don't respond to questions regarding zones we aren't authoritative for
-				continue;
-			}
+		if ( !this.responseCode ) {
+			for ( const question of questions ) {
+				const soaRecord = this.findZoneForName( question.name );
+				if ( !soaRecord ) {
+					// don't respond to questions regarding zones we aren't authoritative for
+					continue;
+				}
 
-			switch ( question.kind() ) {
-				case "IN A" :
-					if ( typeof value == "string" && answer.length === 0 ) {
-						if ( questions.length > 1 ) {
-							return Promise.reject( new Error( "can't handle simple answer to multiple questions" ) );
+				switch ( question.kind() ) {
+					case "IN A" :
+						if ( typeof value == "string" && answer.length === 0 ) {
+							if ( questions.length > 1 ) {
+								return Promise.reject( new Error( "can't handle simple answer to multiple questions" ) );
+							}
+
+							that.answer.push( {
+								class: "IN",
+								type: "A",
+								name: question.name,
+								data: value
+							} );
 						}
+						break;
 
-						that.answer.push( {
-							class: "IN",
-							type: "A",
-							name: question.name,
-							data: value
-						} );
-					}
-					break;
+					case "IN SOA" :
+						// convenience: implicitly provide authoritative SOA record to sole question
+						if ( soaRecord && questions.length === 1 && answer.length === 0 && soaRecord.name === question.name ) {
+							that.answer.push( soaRecord );
+						}
+						break;
+				}
 
-				case "IN SOA" :
-					// convenience: implicitly provide authoritative SOA record to sole question
-					if ( soaRecord && questions.length === 1 && answer.length === 0 && soaRecord.name === question.name ) {
-						that.answer.push( soaRecord );
-					}
-					break;
+				// add SOA record if server is authoritative for sole question that didn't yield any answer
+				if ( soaRecord && questions.length === 1 && answer.length === 0 && authority.length === 0 )
+					that.authority.push( soaRecord );
+
+
+				const minTTL = Math.max( ( soaRecord ? soaRecord.data.ttl : this.connection.server.options.ttl ) || 1, 1 );
+
+				for ( const record of answer ) { wellFormedRecord( record, minTTL ); }
+				for ( const record of authority ) { wellFormedRecord( record, minTTL ); }
+				for ( const record of additional ) { wellFormedRecord( record, minTTL ); }
 			}
-
-			// add SOA record if server is authoritative for sole question that didn't yield any answer
-			if ( soaRecord && questions.length === 1 && answer.length === 0 && authority.length === 0 )
-				that.authority.push( soaRecord );
-
-
-			const minTTL = Math.max( ( soaRecord ? soaRecord.data.ttl : this.connection.server.options.ttl ) || 1, 1 );
-
-			for ( const record of answer ) { wellFormedRecord( record, minTTL ); }
-			for ( const record of authority ) { wellFormedRecord( record, minTTL ); }
-			for ( const record of additional ) { wellFormedRecord( record, minTTL ); }
 		}
 
 
@@ -516,7 +517,7 @@ class DNSResponse extends DNSMessage {
 		const ednsRecords = this.findEDNSRecords();
 		let ednsResponse;
 
-		if ( this.requestorEDNS || this.responseCode > 0x0f ) {
+		if ( this.edns || this.responseCode > 0x0f ) {
 			if ( ednsRecords.length > 1 || ( ednsRecords === 1 && ednsRecords[0].section !== "additional" ) ) {
 				return Promise.reject( new Error( "invalid number or location of EDNS record(s) in response" ) );
 			}
@@ -524,7 +525,7 @@ class DNSResponse extends DNSMessage {
 			if ( ednsRecords.length ) {
 				ednsResponse = ednsRecords[0].record;
 			} else {
-				ednsResponse = this.connection.server.addEDNSReply( this, this.requestorEDNS );
+				ednsResponse = this.connection.server.addEDNSReply( this );
 			}
 		}
 
@@ -534,7 +535,13 @@ class DNSResponse extends DNSMessage {
 		}
 
 
-		return that.connection.send( that.answer.length > 0 || this.authority.length > 0 ? that.toBinary() : null );
+		const reply = answer.length > 0 || authority.length > 0 || ( this.edns && this.responseCode > 0 ) ? that.toBinary() : null;
+
+		if ( !reply ) {
+			console.debug( "ignoring request" );
+		}
+
+		return that.connection.send( reply );
 
 		/**
 		 * Fixes single DNS record.

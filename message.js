@@ -15,6 +15,7 @@ const { SECTIONS, typeToLabel, classToLabel } = require( "./constants" );
  * @property {number} id a number representing the unique query ID
  * @property {string} type "request" or "response"
  * @property {number} responseCode response code
+ * @property {?RawEDNSResourceRecord} edns data of first encountered OPT RR in additional section
  * @property {string} opcode one out of "query", "iquery", "status", "unassigned", "notify", "update"
  * @property {boolean} authoritative indicates if message is an authoritative answer
  * @property {boolean} truncated indicates if message has been truncated due to oversize
@@ -72,6 +73,7 @@ class DNSMessage {
 		this.type = Decode.qr( body ) === 0 ? "request" : "response";
 
 		this.responseCode = Decode.rcode( body );
+		this.edns = null;
 
 		const opcodeNames = [ "query", "iquery", "status", null, "notify", "update" ];
 		const opcode = Decode.opcode( body );
@@ -93,8 +95,9 @@ class DNSMessage {
 			for ( let i = 0; i < count; i++ ) {
 				const record = records[i] = new DNSRecord( body, section, i, sectionsCache );
 
-				if ( record.edns && section === "additional" ) {
+				if ( record.edns && !this.edns && section === "additional" ) {
 					this.responseCode += record.edns.extendedResult << 4;
+					this.edns = record.edns;
 				}
 			}
 		}
@@ -131,7 +134,9 @@ class DNSMessage {
 	 * @returns {Buffer} sequence of octets describing DNS message in wire format
 	 */
 	toBinary() {
-		return new Encoder().message( this ).toBinary();
+		const limit = this.connection && this.connection.type === "tcp" ? 65535 : this.edns ? this.edns.udpSize : 512;
+
+		return new Encoder().message( this ).toBinary( limit );
 	}
 
 	/**
@@ -213,7 +218,7 @@ class DNSRecord {
 		const record = Decode.getRecord( sections, sectionName, recordNum );
 
 		if ( sectionName === "additional" && record.edns ) {
-			this.edns = record.edns;
+			this.edns = record;
 
 			this.name = "";
 			this.class = "IN";
@@ -315,13 +320,26 @@ class DNSRecord {
 	 */
 	toString() {
 		const { data } = this;
+		let rendered;
+
+		if ( this.type === "MX" && data ) {
+			rendered = leftPad( 3, data[0] ) + " " + data[1];
+		} else if ( Buffer.isBuffer( data ) ) {
+			rendered = data.toString( "hex" );
+		} else if ( Array.isArray( data ) ) {
+			rendered = data.join( " " );
+		} else if ( typeof data === "object" && data ) {
+			rendered = JSON.stringify( data );
+		} else {
+			rendered = data == null ? "" : String( data ) || "";
+		}
 
 		return [
 			leftPad( 23, this.name ),
 			leftPad( 7, this.ttl || "" ),
 			leftPad( 7, this.class ),
 			leftPad( 7, this.type ),
-			this.type === "MX" && data ? leftPad( 3, data[0] ) + " " + data[1] : Buffer.isBuffer( data ) ? data.toString( "hex" ) : data || "",
+			rendered,
 		].join( " " );
 	}
 }

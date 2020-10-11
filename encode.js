@@ -29,12 +29,20 @@ class Encoder {
 	/**
 	 * Retrieves sequence of octets describing message prepared in encoder.
 	 *
+	 * @param {number} limit maximum number of octets transferable due to maximum transfer unit
 	 * @returns {Buffer} description of message in wire format
 	 */
-	toBinary() {
-		return Buffer.concat( [this.header].concat(
+	toBinary( limit = 512 ) {
+		const compiled = Buffer.concat( [this.header].concat(
 			this.question, this.answer, this.authority, this.additional
 		) );
+
+		if ( compiled.length > limit ) {
+			// set truncated flag
+			compiled.writeUInt16BE( compiled.readUInt16BE( 2 ) | 0x02, 2 );
+		}
+
+		return compiled;
 	}
 
 	/**
@@ -128,7 +136,7 @@ class Encoder {
 		buf = Buffer.alloc( 8 );
 		buf.writeUInt16BE( 41, 0 );
 		buf.writeUInt16BE( edns.udpSize, 2 );
-		buf.writeUInt16BE( flags, 4 );
+		buf.writeUInt32BE( flags, 4 );
 		chunks.push( buf );
 		this.position += 8;
 
@@ -233,27 +241,28 @@ class Encoder {
 
 				case "IN SOA" : {
 					// fix notation of mail
-					const parts = record.data.rname.split( "@" );
+					const { data } = record;
+					const parts = data.rname.split( "@" );
 					let mail;
 
 					if ( parts.length > 0 ) {
 						parts[0] = parts[0].replace( /\./g, "\\." );
 						mail = parts.join( "." );
 					} else {
-						mail = record.data.rname;
+						mail = data.rname;
 					}
 
-					const mName = this.encodeName( record.data.mname, 2 );
+					const mName = this.encodeName( data.mname, 2 );
 					const rName = this.encodeName( mail, 2 + mName.length );
 
 					rdata = [
 						mName,
 						rName,
-						buf32( record.data.serial ),
-						buf32( record.data.refresh ),
-						buf32( record.data.retry ),
-						buf32( record.data.expire ),
-						buf32( record.data.ttl ),
+						buf32( data.serial ),
+						buf32( data.refresh ),
+						buf32( data.retry ),
+						buf32( data.expire ),
+						buf32( data.ttl ),
 					];
 					break;
 				}

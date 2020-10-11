@@ -29,6 +29,7 @@
 	"scripts": {
 		"lint": "eslint .",
 		"test": "tap --coverage-report=html --no-browser test/*.js",
-		"test:only": "tap -Rdot --only --no-color --bail test/*.js"
+		"test:only": "tap -Rdot --only --no-color --bail test/*.js",
+		"test:dns": "node test.js"
 	}
 }
