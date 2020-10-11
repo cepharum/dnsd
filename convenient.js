@@ -12,7 +12,7 @@ module.exports = {
 	 * @returns {number|*} serial describing "now", otherwise provided value
 	 */
 	serial( value ) {
-		if ( value === "now" ) {
+		if ( !value || value === "now" ) {
 			const now = new Date;
 
 			return Math.floor( now.getTime() / 1000 );
