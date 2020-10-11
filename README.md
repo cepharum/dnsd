@@ -2,7 +2,7 @@
 
 *dnsd* is a Node.js package for working with DNS. It converts binary DNS messages to and from convenient JavaScript objects; and it provides a server API, for running a custom name server.
 
-> This module is a fork of dnsd originally developed for Iris Couch.
+> This module is a fork of dnsd originally developed for Iris Couch. We've basically improved the code and started adding support for EDNS. Currently, we are using it for dynamic exposure of services in a Docker swarm. 
 
 *dnsd* is available as an npm module.
 
@@ -13,11 +13,19 @@
 This simple DNS server responds with an "A" (address) record of `1.2.3.4` for every request.
 
 ```javascript
-var dnsd = require('dnsd')
-dnsd.createServer(function(req, res) {
-  res.end('1.2.3.4')
-}).listen(5353, '127.0.0.1')
-console.log('Server running at 127.0.0.1:5353')
+const dnsd = require( "dnsd" );
+
+dnsd.createServer( ( req, res ) => {
+    res.end( "1.2.3.4" );
+}, {
+    // provide custom defaults here
+    ttl: 3600,
+} )
+    .zone( "example" )
+    .listen( 5353, "127.0.0.1" )
+    .once( "listening", () => {
+        console.log( "Server is running at 127.0.0.1:5353" );
+    } );
 ```
 
 Now test your server:
@@ -46,26 +54,28 @@ Now test your server:
 This example logs all requests. For address (A) queries, it returns two records, with a random TTL, and the final octet of the IP address is the length of the hostname queried.
 
 ```javascript
-var dnsd = require('dnsd')
+const dnsd = require( "dnsd" );
 
-var server = dnsd.createServer(handler)
-server.zone('example.com', 'ns1.example.com', 'us@example.com', 'now', '2h', '30m', '2w', '10m')
-      .listen(5353, '127.0.0.1')
-console.log('Server running at 127.0.0.1:5353')
+dnsd.createServer(handler)
+    .zone("example.com", "ns1.example.com", "us@example.com", "now", "2h", "30m", "2w", "10m" )
+    .listen( 5353, "127.0.0.1" );
 
 function handler(req, res) {
-  console.log('%s:%s/%s %j', req.connection.remoteAddress, req.connection.remotePort, req.connection.type, req)
+    const { remoteAddress, remotePort, type } = req.connection;
 
-  var question = res.question[0]
-    , hostname = question.name
-    , length = hostname.length
-    , ttl = Math.floor(Math.random() * 3600)
+    console.log( "%s:%s/%s %j", remoteAddress, remotePort, type, req );
+    
+    const question = res.question[0];
+    const hostname = question.name;
+    const length = hostname.length;
+    const ttl = Math.floor( Math.random() * 3600 );
 
-  if(question.type == 'A') {
-    res.answer.push({name:hostname, type:'A', data:"1.1.1."+length, 'ttl':ttl})
-    res.answer.push({name:hostname, type:'A', data:"2.2.2."+length, 'ttl':ttl})
-  }
-  res.end()
+    if ( question.type === "A" ) {
+        res.answer.push( { name:hostname, type:"A", data:"1.1.1." + length, ttl } );
+        res.answer.push( { name:hostname, type:"A", data:"2.2.2." + length, ttl } );
+    }
+
+    res.end()
 }
 ```
 
@@ -124,6 +134,7 @@ Server output for these queries:
 
 
 ## Example: MX Records
+
 This is an example if you need to route your mail server with an MX record.
 
 ```javascript
@@ -133,24 +144,23 @@ This is an example if you need to route your mail server with an MX record.
 // 1. Run this program
 // 2. dig @localhost -p 5353 example.com mx
  
-var dnsd = require('dnsd')
+const dnsd = require( "dnsd" );
  
-var server = dnsd.createServer(handler)
-server.zone('example.com', 'ns1.example.com', 'us@example.com', 'now', '2h', '30m', '2w', '10m')
-server.listen(5353, '127.0.0.1')
-console.log('Listening at 127.0.0.1:5353')
+dnsd.createServer( handler )
+    .zone( "example.com", "ns1.example.com", "us@example.com", "now", "2h", "30m", "2w", "10m" )
+    .listen( 5353, "127.0.0.1" );
  
 function handler(req, res) {
-  var question = res.question && res.question[0]
- 
-  if(question.type != 'MX')
-    return res.end()
- 
-  console.log('MX lookup for domain: %s', question.name)
-  res.answer.push({'name':question.name, 'type':'MX', 'data':[10, 'mail.example.com']})
-  res.answer.push({'name':question.name, 'type':'MX', 'data':[20, 'mail.backupexample.com']})
-  
-  return res.end()
+    const question = res.question && res.question[0]
+    
+    if ( question.type === "MX" ) {
+        console.log( "MX lookup for domain: %s", question.name );
+        
+        res.answer.push( { name:question.name, type:"MX", data:{ weight: 10, name: "mail.example.com" } } );
+        res.answer.push( { name:question.name, type:"MX", data:{ weight: 20, name: "mail.backupexample.com" } } );
+    }
+    
+    return res.end();
 }
 ```
 
@@ -167,11 +177,11 @@ See http://support.google.com/a/bin/answer.py?hl=en&answer=140034 for more info 
 const fs = require("fs")
 const dnsd = require("dnsd")
 
-const msg_file = require.resolve("dnsd/_test_data/registry.npmjs.org-response");
-const msg_data = fs.readFileSync(msg_file);
-const message = dnsd.decode(msg_data)
+const msg_file = require.resolve( "dnsd/_test_data/registry.npmjs.org-response" );
+const msg_data = fs.readFileSync( msg_file );
+const message = dnsd.decode( msg_data );
 
-console.dir(message);
+console.dir( message );
 ```
 
 Output
@@ -252,15 +262,6 @@ Round trip:
   authenticated: false,
   checkingDisabled: false,
   question: [ { name: 'example.com', type: 'TXT', class: 'IN' } ] }
-```
-
-## Defaults
-
-`dnsd` is [defaultable][def].
-
-```javascript
-var dnsd = require( "dnsd" );
-var dnsd_custom = dnsd.defaults( { ttl: 180 } );
 ```
 
 ## Convenience Support
