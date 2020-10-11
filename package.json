@@ -7,7 +7,7 @@
 		"dnsd",
 		"iris"
 	],
-	"version": "0.10.0",
+	"version": "0.10.1",
 	"author": "Jason Smith <jhs@iriscouch.com> (http://www.iriscouch.com)",
 	"contributors": [
 		"Thomas Urban <thomas.urban@cepharum.de>"
