@@ -6,6 +6,15 @@
 
 module.exports = {
 	SECTIONS: [ "question", "answer", "authority", "additional" ],
+	RCODE: {
+		NOERROR: 0,
+		FORMERR: 1,
+		SERVFAIL: 2,
+		NAMEERR: 3,
+		NOTIMPL: 4,
+		REFUSED: 5,
+		BADVERS: 16,
+	},
 
 	type: swapType,
 	class: swapClass,

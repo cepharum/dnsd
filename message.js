@@ -14,7 +14,7 @@ const { SECTIONS, typeToLabel, classToLabel } = require( "./constants" );
  *
  * @property {number} id a number representing the unique query ID
  * @property {string} type "request" or "response"
- * @property {number} response response code
+ * @property {number} responseCode response code
  * @property {string} opcode one out of "query", "iquery", "status", "unassigned", "notify", "update"
  * @property {boolean} authoritative indicates if message is an authoritative answer
  * @property {boolean} truncated indicates if message has been truncated due to oversize
@@ -91,9 +91,38 @@ class DNSMessage {
 			const records = this[section] = new Array( count );
 
 			for ( let i = 0; i < count; i++ ) {
-				records[i] = new DNSRecord( body, section, i, sectionsCache );
+				const record = records[i] = new DNSRecord( body, section, i, sectionsCache );
+
+				if ( record.edns && section === "additional" ) {
+					this.responseCode += record.edns.extendedResult << 4;
+				}
 			}
 		}
+	}
+
+	/**
+	 * Searches provided message for EDNS-specific OPT RR.
+	 *
+	 * @returns {EDNSRecordLocation[]} list of found EDNS records
+	 */
+	findEDNSRecords() {
+		const ednsRecords = [];
+
+		for ( const section of SECTIONS ) {
+			/** @type {DNSRecord[]} */
+			const records = this[section];
+			const numRecords = records.length;
+
+			for ( let i = 0; i < numRecords; i++ ) {
+				const record = records[i];
+
+				if ( record.edns ) {
+					ednsRecords.push( { section, index: i, record } );
+				}
+			}
+		}
+
+		return ednsRecords;
 	}
 
 	/**
@@ -335,3 +364,12 @@ function renderIPv6( buf ) {
 
 exports.DNSMessage = DNSMessage;
 exports.DNSRecord = DNSRecord;
+
+
+
+/**
+ * @typedef {object} EDNSRecordLocation
+ * @property {string} section name of section record was found in
+ * @property {number} index found record's index into list of named section's records
+ * @property {DNSRecord} record found EDNS record
+ */

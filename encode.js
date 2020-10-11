@@ -67,7 +67,7 @@ class Encoder {
 		if ( opcode === -1 || typeof msg.opcode !== "string" )
 			throw new Error( "Unknown opcode: " + msg.opcode );
 
-		byte |= opcode << 3;
+		byte |= ( opcode & 0x0f ) << 3;
 
 		this.header.writeUInt8( byte, 2 );
 
@@ -80,7 +80,7 @@ class Encoder {
 
 		this.header.writeUInt8( byte, 3 );
 
-		this.position = 12; // the beginning of the sections
+		this.position = 12;
 
 		for ( const section of SECTIONS ) {
 			for ( const record of msg[section] || [] ) {
@@ -111,22 +111,49 @@ class Encoder {
 	 */
 	ednsRecord( sectionName, record ) {
 		const chunks = [];
+		const { edns } = record;
 
+		// encode empty name
 		let buf = this.encodeName( "" );
 		chunks.push( buf );
 		this.position += buf.length;
 
+		// compile flags
 		let flags = 0;
-		flags += ( record.edns.extendedResult & 0xff ) << 24;
-		flags += ( record.edns.version & 0xff ) << 16;
-		flags += record.edns.flagDO ? 0x8000 : 0;
+		flags += ( edns.extendedResult & 0xff ) << 24;
+		flags += ( edns.version & 0xff ) << 16;
+		flags += edns.flagDO ? 0x8000 : 0;
 
+		// encode custom header of OPT RR
 		buf = Buffer.alloc( 8 );
 		buf.writeUInt16BE( 41, 0 );
-		buf.writeUInt16BE( record.edns.udpSize, 2 );
+		buf.writeUInt16BE( edns.udpSize, 2 );
 		buf.writeUInt16BE( flags, 4 );
 		chunks.push( buf );
 		this.position += 8;
+
+		// encode variable-size options data
+		const options = Array.isArray( edns.options ) ? edns.options : [];
+		const optionsLength = Buffer.alloc( 2 );
+		chunks.push( optionsLength );
+
+		let length = 0;
+		for ( const option of options ) {
+			const { code, data } = option || {};
+
+			if ( code > -1 && Buffer.isBuffer( data ) ) {
+				length += 4 + data.length;
+
+				buf = Buffer.alloc( 4 );
+				buf.writeUInt16BE( code, 0 );
+				buf.writeUInt16BE( data.length, 2 );
+				chunks.push( buf );
+				chunks.push( data );
+			}
+		}
+
+		optionsLength.writeUInt16BE( length, 0 );
+
 
 		this[sectionName].push( Buffer.concat( chunks ) );
 	}

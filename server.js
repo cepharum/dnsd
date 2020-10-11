@@ -10,6 +10,7 @@ const { EventEmitter } = require( "events" );
 
 const { DNSMessage, DNSRecord } = require( "./message" );
 const { seconds: asSeconds, serial: asSerial } = require( "./convenient" );
+const { RCODES } = require( "./constants" );
 
 
 const DefaultOptions = {
@@ -223,8 +224,12 @@ class DNSServer extends EventEmitter {
 			if ( expecting > -1 && received >= 2 + expecting ) {
 				const buf = Buffer.concat( chunks ).slice( 2 );
 				const message = buf.slice( 0, expecting );
+				const request = new DNSRequest( message, socket );
+				const response = new DNSResponse( message, socket );
 
-				this.emit( "request", new DNSRequest( message, socket ), new DNSResponse( message, socket ) );
+				if ( this.isValidEDNS( request, response ) ) {
+					this.emit( "request", request, response );
+				}
 
 				expecting = -1;
 				received = buf.length - expecting;
@@ -277,7 +282,85 @@ class DNSServer extends EventEmitter {
 			} ),
 		};
 
-		this.emit( "request", new DNSRequest( query, socket ), new DNSResponse( query, socket ) );
+		const request = new DNSRequest( query, socket );
+		const response = new DNSResponse( query, socket );
+
+		if ( this.isValidEDNS( request, response ) ) {
+			this.emit( "request", request, response );
+		}
+	}
+
+	/**
+	 * Checks if request complies with EDNS requirements in RFC 6891.
+	 *
+	 * @param {DNSRequest} request incoming request to be handled
+	 * @param {DNSResponse} response prepared response
+	 * @returns {boolean} true if request may be handled by server callback, false if response has been transmitted already
+	 */
+	isValidEDNS( request, response ) {
+		const records = request.findEDNSRecords();
+
+		if ( records.length > 1 || ( records.length === 1 && records[0].section !== "additional" ) ) {
+			this.respondOnInvalidEDNS( response, null, RCODES.FORMERR );
+			return false;
+		}
+
+		if ( records.length === 1 ) {
+			const { record: { edns } } = records[0];
+
+			if ( edns.version > 0 ) {
+				this.respondOnInvalidEDNS( response, edns, RCODES.BADVERS );
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Responds to request with EDNS error.
+	 *
+	 * @param {DNSResponse} response response EDNS record is added to
+	 * @param {?RawEDNSResourceRecord} requestorEDNS EDNS record optionally found request
+	 * @returns {DNSRecord} EDNS record added to response
+	 */
+	addEDNSReply( response, requestorEDNS ) {
+		const record = new DNSRecord( {
+			edns: {
+				udpSize: Math.max( requestorEDNS ? requestorEDNS.udpSize || 512 : 512, 512 ),
+				extendedResult: 0,
+				version: 0,
+				flagDO: 0,
+				flags: 0,
+				options: [],
+			},
+			name: "",
+			class: "IN",
+			type: "OPT",
+		} );
+
+		response.additional.push( record );
+
+		return record;
+	}
+
+	/**
+	 * Responds to request with EDNS error.
+	 *
+	 * @param {DNSResponse} response response to use for replying
+	 * @param {?RawEDNSResourceRecord} requestorEDNS EDNS record optionally found request
+	 * @param {number} resultCode EDNS extended result code to use
+	 * @returns {void}
+	 */
+	respondOnInvalidEDNS( response, requestorEDNS, resultCode ) {
+		this.addEDNSReply( response, requestorEDNS );
+
+		response.responseCode = resultCode;                                     // eslint-disable-line no-param-reassign
+
+		response.end()
+			.catch( error => {
+				console.error( `responding on invalid EDNS request failed: ${error.message}` );
+			} );
 	}
 }
 
@@ -316,6 +399,8 @@ class DNSRequest extends DNSMessage {
 /**
  * Implements common manager of response to incoming DNS query in context of
  * DNS server.
+ *
+ * @property {RawEDNSResourceRecord} requestorEDNS EDNS data extracted from request message
  */
 class DNSResponse extends DNSMessage {
 	/**
@@ -324,6 +409,9 @@ class DNSResponse extends DNSMessage {
 	 */
 	constructor( data, connection ) {
 		super( data );
+
+		const ednsRecords = this.findEDNSRecords();
+		this.requestorEDNS = ednsRecords.length === 1 && ednsRecords[0].section === "additional" ? ednsRecords.record.edns : null;
 
 		this.question = this.question || [];
 		this.answer = this.answer || [];
@@ -404,13 +492,14 @@ class DNSResponse extends DNSMessage {
 					break;
 
 				case "IN SOA" :
-					// Respond with the SOA record for this zone if necessary and possible.
-					if ( answer.length === 0 && soaRecord && soaRecord.name === question.name )
+					// convenience: implicitly provide authoritative SOA record to sole question
+					if ( soaRecord && questions.length === 1 && answer.length === 0 && soaRecord.name === question.name ) {
 						that.answer.push( soaRecord );
+					}
 					break;
 			}
 
-			// If the server is authoritative for a zone, add an SOA record if there is no good answer.
+			// add SOA record if server is authoritative for sole question that didn't yield any answer
 			if ( soaRecord && questions.length === 1 && answer.length === 0 && authority.length === 0 )
 				that.authority.push( soaRecord );
 
@@ -420,6 +509,28 @@ class DNSResponse extends DNSMessage {
 			for ( const record of answer ) { wellFormedRecord( record, minTTL ); }
 			for ( const record of authority ) { wellFormedRecord( record, minTTL ); }
 			for ( const record of additional ) { wellFormedRecord( record, minTTL ); }
+		}
+
+
+		// ensure to have EDNS record in response if required
+		const ednsRecords = this.findEDNSRecords();
+		let ednsResponse;
+
+		if ( this.requestorEDNS || this.responseCode > 0x0f ) {
+			if ( ednsRecords.length > 1 || ( ednsRecords === 1 && ednsRecords[0].section !== "additional" ) ) {
+				return Promise.reject( new Error( "invalid number or location of EDNS record(s) in response" ) );
+			}
+
+			if ( ednsRecords.length ) {
+				ednsResponse = ednsRecords[0].record;
+			} else {
+				ednsResponse = this.connection.server.addEDNSReply( this, this.requestorEDNS );
+			}
+		}
+
+
+		if ( this.responseCode > 0x0f ) {
+			ednsResponse.edns.extendedResult = ( this.responseCode & 0xff0 ) >> 4;
 		}
 
 
@@ -437,7 +548,7 @@ class DNSResponse extends DNSMessage {
 				record.class = "IN";                                            // eslint-disable-line no-param-reassign
 			}
 
-			if ( !record.ttl ) {
+			if ( !record.ttl && !record.edns ) {
 				record.ttl = minTTL;                                            // eslint-disable-line no-param-reassign
 			}
 		}
