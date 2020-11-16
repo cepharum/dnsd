@@ -423,6 +423,7 @@ class DNSResponse extends DNSMessage {
 		this.connection = connection;
 
 		this.type = "response";
+		this.ignoreEmpty = false;
 	}
 
 	/**
@@ -538,7 +539,7 @@ class DNSResponse extends DNSMessage {
 		}
 
 
-		const reply = answer.length > 0 || authority.length > 0 || ( this.edns && this.responseCode > 0 ) ? that.toBinary() : null;
+		const reply = !this.ignoreEmpty || answer.length > 0 || authority.length > 0 || ( this.edns && this.responseCode > 0 ) ? that.toBinary() : null;
 
 		if ( !reply && this.connection.server.options.debug ) {
 			console.debug( "ignoring request" );
